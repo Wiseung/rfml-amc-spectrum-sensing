@@ -1,0 +1,1 @@
+"""STFT-CNN model placeholder."""

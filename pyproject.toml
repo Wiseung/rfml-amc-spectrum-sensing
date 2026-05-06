@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rfml-amc-spectrum-sensing"
+version = "0.1.0"
+description = "PyTorch scaffold for RadioML 2018.01A AMC and spectrum sensing"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = { text = "MIT" }
+authors = [
+  { name = "wiseung", email = "1120686111@qq.com" }
+]
+dependencies = [
+  "numpy>=1.26",
+  "scipy>=1.13",
+  "h5py>=3.11",
+  "PyYAML>=6.0",
+  "matplotlib>=3.8",
+  "seaborn>=0.13",
+  "pandas>=2.2",
+  "scikit-learn>=1.5",
+  "tqdm>=4.66",
+  "tensorboard>=2.17",
+  "torch>=2.4",
+  "torchvision>=0.19",
+  "torchaudio>=2.4",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ipykernel>=6.29",
+  "jupyter>=1.0",
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

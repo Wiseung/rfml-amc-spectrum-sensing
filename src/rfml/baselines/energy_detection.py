@@ -1,0 +1,1 @@
+"""Energy detection baseline placeholder."""

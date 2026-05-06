@@ -1,0 +1,1 @@
+"""SNR plot helper placeholder."""
