@@ -10,6 +10,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from rfml.data.noise import estimate_noise_power_from_observation
 from rfml.data.radioml2018 import FilterLike, IndexLike, RadioML2018Dataset
 
 
@@ -169,11 +170,10 @@ class SpectrumSensingDataset(Dataset[dict[str, Any]]):
         reference_index: int,
         item_index: int,
     ) -> torch.Tensor:
-        signal_power = float(torch.mean(reference_iq[0].square() + reference_iq[1].square()).item())
+        total_power = float(torch.mean(reference_iq[0].square() + reference_iq[1].square()).item())
         noise_power = self.noise_power
         if noise_power is None:
-            snr_linear = 10.0 ** (reference_snr / 10.0)
-            noise_power = signal_power / max(snr_linear, 1e-8)
+            noise_power = estimate_noise_power_from_observation(total_power, reference_snr)
 
         component_std = float(np.sqrt(noise_power / 2.0))
         rng_seed = self.seed * 1_000_003 + reference_index * 97 + item_index

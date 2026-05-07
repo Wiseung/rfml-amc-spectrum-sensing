@@ -9,6 +9,7 @@ from typing import Sequence
 import numpy as np
 from scipy import stats
 
+from rfml.data.noise import estimate_noise_power_from_observation
 from rfml.data.radioml2018 import RadioML2018Dataset
 from rfml.data.splits import SplitBundle, load_split_bundle, resolve_split_indices
 
@@ -32,17 +33,28 @@ def iter_dataset_samples(
     snr_filter: Sequence[int | float] | None = None,
     max_samples: int | None = None,
     scan_chunk_size: int = 8192,
+    sample_seed: int = 42,
 ):
     dataset = RadioML2018Dataset(
         h5_path,
         split_indices=split_indices,
         class_names=class_names,
         snr_filter=snr_filter,
-        max_samples=max_samples,
+        max_samples=None,
         scan_chunk_size=scan_chunk_size,
     )
-    for local_index in range(len(dataset)):
-        yield dataset[local_index]
+    if len(dataset) == 0:
+        return
+
+    local_indices = np.arange(len(dataset), dtype=np.int64)
+    if max_samples is not None and max_samples < len(local_indices):
+        rng = np.random.default_rng(sample_seed)
+        local_indices = np.sort(
+            rng.choice(local_indices, size=max_samples, replace=False).astype(np.int64, copy=False)
+        )
+
+    for local_index in local_indices.tolist():
+        yield dataset[int(local_index)]
 
 
 def extract_statistical_features(iq: np.ndarray) -> np.ndarray:
@@ -108,6 +120,7 @@ def build_feature_batch(
     snr_filter: Sequence[int | float] | None = None,
     max_samples: int | None = None,
     scan_chunk_size: int = 8192,
+    sample_seed: int = 42,
 ) -> FeatureBatch:
     feature_rows: list[np.ndarray] = []
     labels: list[int] = []
@@ -121,6 +134,7 @@ def build_feature_batch(
         snr_filter=snr_filter,
         max_samples=max_samples,
         scan_chunk_size=scan_chunk_size,
+        sample_seed=sample_seed,
     ):
         iq = sample["iq"].numpy()
         feature_rows.append(extract_statistical_features(iq))
@@ -147,9 +161,8 @@ def sample_matched_noise(
 ) -> np.ndarray:
     """Generate complex AWGN with power matched to the requested SNR."""
 
-    signal_power = float(np.mean(signal_iq[0] ** 2 + signal_iq[1] ** 2))
-    snr_linear = 10.0 ** (snr_db / 10.0)
-    noise_power = signal_power / max(snr_linear, 1e-8)
+    total_power = float(np.mean(signal_iq[0] ** 2 + signal_iq[1] ** 2))
+    noise_power = estimate_noise_power_from_observation(total_power, snr_db)
     component_std = np.sqrt(noise_power / 2.0)
     noise = rng.normal(0.0, component_std, size=signal_iq.shape).astype(np.float32)
     return noise

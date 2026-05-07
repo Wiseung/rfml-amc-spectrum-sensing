@@ -27,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cnn-run-dir", default=None)
     parser.add_argument("--resnet-run-dir", default=None)
     parser.add_argument("--stft-run-dir", default=None)
+    parser.add_argument("--multitask-run-dir", default=None)
     parser.add_argument("--out-dir", default="outputs/comparisons")
     return parser.parse_args()
 
@@ -35,6 +36,12 @@ def _load_summary(run_dir: Path) -> tuple[float, pd.DataFrame]:
     summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     acc_vs_snr = pd.read_csv(run_dir / "accuracy_vs_snr.csv")
     return float(summary["overall_accuracy"]), acc_vs_snr
+
+
+def _load_multitask_summary(run_dir: Path) -> tuple[float, pd.DataFrame]:
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    acc_vs_snr = pd.read_csv(run_dir / "modulation_accuracy_vs_snr.csv")
+    return float(summary["modulation_accuracy"]), acc_vs_snr
 
 
 def _write_metric_csv(path: Path, model_name: str, overall_accuracy: float) -> None:
@@ -74,6 +81,13 @@ def main() -> int:
         stft_df["model"] = "stft_cnn"
         comparison_frames.append(stft_df)
         _write_metric_csv(out_dir / "stft_cnn_metrics.csv", "stft_cnn", stft_acc)
+
+    if args.multitask_run_dir:
+        multitask_dir = Path(args.multitask_run_dir).expanduser().resolve()
+        multitask_acc, multitask_df = _load_multitask_summary(multitask_dir)
+        multitask_df["model"] = "multitask"
+        comparison_frames.append(multitask_df)
+        _write_metric_csv(out_dir / "multitask_metrics.csv", "multitask", multitask_acc)
 
     if comparison_frames:
         combined = pd.concat(comparison_frames, ignore_index=True)

@@ -128,6 +128,7 @@ def run_sklearn_baseline(
         snr_filter=snr_filter,
         max_samples=max_train_samples,
         scan_chunk_size=scan_chunk_size,
+        sample_seed=random_state,
     )
     eval_batch = build_feature_batch(
         h5_path,
@@ -136,6 +137,7 @@ def run_sklearn_baseline(
         snr_filter=snr_filter,
         max_samples=max_eval_samples,
         scan_chunk_size=scan_chunk_size,
+        sample_seed=random_state + 1,
     )
 
     classifier = build_classifier(classifier_name, random_state=random_state)

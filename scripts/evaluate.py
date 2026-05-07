@@ -222,6 +222,7 @@ def main() -> int:
         sense_labels = []
         sense_scores = []
         sense_preds = []
+        sense_snrs = []
         with torch.no_grad():
             for batch in loader:
                 x = batch["iq"].to(device, non_blocking=config.pin_memory)
@@ -244,6 +245,7 @@ def main() -> int:
                 sense_labels.extend(sensing_target.tolist())
                 sense_scores.extend(sensing_prob.astype(np.float32).tolist())
                 sense_preds.extend(sensing_pred.tolist())
+                sense_snrs.extend(snr_values.tolist())
 
         mod_y_true = np.asarray(mod_labels, dtype=np.int64)
         mod_y_pred = np.asarray(mod_preds, dtype=np.int64)
@@ -251,6 +253,7 @@ def main() -> int:
         sense_y_true = np.asarray(sense_labels, dtype=np.int64)
         sense_y_pred = np.asarray(sense_preds, dtype=np.int64)
         sense_scores_arr = np.asarray(sense_scores, dtype=np.float32)
+        sense_snrs_arr = np.asarray(sense_snrs, dtype=np.float32)
 
         modulation_accuracy = compute_accuracy(mod_y_true, mod_y_pred)
         mod_acc_vs_snr_df = compute_accuracy_vs_snr(mod_y_true, mod_y_pred, mod_snrs_arr)
@@ -270,9 +273,7 @@ def main() -> int:
         sensing_result = evaluate_sensing_predictions(
             sense_y_true,
             sense_scores_arr,
-            np.asarray(mod_snrs + [0.0] * max(0, sense_y_true.shape[0] - len(mod_snrs)), dtype=np.float32)[: sense_y_true.shape[0]]
-            if sense_y_true.shape[0] != len(dataset)
-            else np.asarray([float(dataset[idx]["snr"].item()) for idx in range(len(dataset))], dtype=np.float32),
+            sense_snrs_arr,
         )
         sensing_result.metrics.to_csv(out_dir / "sensing_metrics.csv", index=False)
         sensing_result.roc_curve.to_csv(out_dir / "sensing_roc_curve.csv", index=False)

@@ -8,6 +8,7 @@ import numpy as np
 from rfml.baselines.common import extract_statistical_features
 from rfml.baselines.energy_detection import evaluate_energy_detection, run_energy_detection_from_split
 from rfml.baselines.sklearn_baselines import run_sklearn_baseline
+from rfml.data.noise import estimate_noise_power_from_observation
 from rfml.data.splits import create_stratified_splits_from_h5, save_split_bundle
 
 
@@ -69,6 +70,13 @@ def test_evaluate_energy_detection_outputs_valid_tables() -> None:
     result = evaluate_energy_detection(signal_energies, noise_energies, snrs, num_thresholds=16)
     assert result.metrics.loc[0, "best_pd"] >= result.metrics.loc[0, "best_pfa"]
     assert set(result.pd_vs_snr.columns) == {"snr", "num_samples", "pd", "pfa"}
+
+
+def test_estimate_noise_power_from_observation_matches_total_power_model() -> None:
+    total_power = 1.2
+    snr_db = 0.0
+    noise_power = estimate_noise_power_from_observation(total_power, snr_db)
+    assert np.isclose(noise_power, 0.6)
 
 
 def _build_baseline_h5(path: Path) -> Path:

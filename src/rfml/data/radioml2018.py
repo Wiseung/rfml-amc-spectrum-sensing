@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import ast
 from typing import Any, Sequence
 
 import h5py
@@ -361,13 +362,49 @@ def load_class_names(class_names_path: str | Path) -> list[str]:
     """Load class names from a plain-text file with one label per line."""
 
     path = Path(class_names_path).expanduser().resolve()
-    return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    text = path.read_text(encoding="utf-8")
+    if "classes =" in text:
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("classes ="):
+                _, rhs = stripped.split("=", 1)
+                try:
+                    parsed = ast.literal_eval(rhs.strip())
+                except Exception:
+                    continue
+                if isinstance(parsed, list) and all(isinstance(item, str) for item in parsed):
+                    return parsed
+
+        start = text.find("classes =")
+        if start != -1:
+            bracket_start = text.find("[", start)
+            bracket_end = text.find("]", bracket_start)
+            if bracket_start != -1 and bracket_end != -1:
+                try:
+                    parsed = ast.literal_eval(text[bracket_start : bracket_end + 1])
+                except Exception:
+                    parsed = None
+                if isinstance(parsed, list) and all(isinstance(item, str) for item in parsed):
+                    return parsed
+
+    return [line.strip() for line in text.splitlines() if line.strip()]
 
 
 def infer_class_names_from_h5(h5_path: str | Path) -> list[str] | None:
     """Try to recover class names from common HDF5 metadata layouts."""
 
     path = Path(h5_path).expanduser().resolve()
+    # RadioML 2018.01A mirrors often ship sidecar class-name files instead of
+    # embedding names inside the HDF5. Prefer the known fixed-order file when
+    # present, then fall back to the original classes.txt.
+    for candidate_name in ("classes-fixed.txt", "classes.txt"):
+        candidate = path.parent / candidate_name
+        if candidate.exists():
+            try:
+                return load_class_names(candidate)
+            except Exception:
+                pass
+
     with h5py.File(path, "r") as h5f:
         for key in ("classes", "class_names", "mods", "modulations"):
             if key in h5f:

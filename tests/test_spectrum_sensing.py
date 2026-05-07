@@ -21,6 +21,11 @@ def test_spectrum_sensing_dataset_balances_positive_negative(tmp_path: Path) -> 
     noise_idx = next(idx for idx in range(len(dataset)) if int(dataset[idx]["label"].item()) == 0)
     noise_sample = dataset[noise_idx]
     assert tuple(noise_sample["iq"].shape) == (2, 1024)
+    reference_idx = int(dataset.reference_positions[noise_idx])
+    reference = dataset.signal_dataset[reference_idx]
+    reference_power = float((reference["iq"][0].square() + reference["iq"][1].square()).mean().item())
+    noise_power = float((noise_sample["iq"][0].square() + noise_sample["iq"][1].square()).mean().item())
+    assert noise_power <= reference_power + 1e-4
 
 
 def test_sensing_metrics_return_expected_columns() -> None:

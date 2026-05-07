@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project data and experiment artifacts
+data/*
+!data/.gitkeep
+outputs/*
+!outputs/.gitkeep

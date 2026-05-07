@@ -1,0 +1,33 @@
+task:
+  name: multitask
+  positive_ratio: 0.5
+  noise_power: null
+  seed: 42
+  lambda_sensing: 1.0
+
+model:
+  name: cnn1d
+  num_classes: 24
+  modulation_num_classes: 24
+  sensing_num_classes: 2
+  channels: [64, 128, 256]
+  kernel_sizes: [7, 5, 3]
+  classifier_hidden_dim: 256
+  dropout: 0.3
+
+training:
+  epochs: 6
+  batch_size: 512
+  lr: 0.001
+  optimizer: adamw
+  weight_decay: 0.0001
+  amp: true
+  num_workers: 4
+  pin_memory: true
+  grad_clip: 1.0
+  early_stopping_patience: 3
+  save_every: 2
+
+runtime:
+  device: cuda
+  scan_chunk_size: 8192
