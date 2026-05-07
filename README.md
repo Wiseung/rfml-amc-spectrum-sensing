@@ -162,11 +162,30 @@ python scripts/train.py \
   --split outputs/splits/radioml2018_seed42.npz \
   --out outputs/runs/cnn1d_seed42
 
+python scripts/train.py \
+  --config configs/resnet1d.yaml \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --out outputs/runs/resnet1d_seed42
+
 python scripts/evaluate.py \
   --config configs/cnn1d.yaml \
   --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
   --split outputs/splits/radioml2018_seed42.npz \
   --ckpt outputs/runs/cnn1d_seed42/best.pt
+
+python scripts/evaluate.py \
+  --config configs/resnet1d.yaml \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --ckpt outputs/runs/resnet1d_seed42/best.pt
+
+python scripts/compare_results.py \
+  --baseline-acc-vs-snr outputs/baselines/svm_accuracy_vs_snr.csv \
+  --baseline-overall-acc 0.70 \
+  --cnn-run-dir outputs/runs/cnn1d_seed42 \
+  --resnet-run-dir outputs/runs/resnet1d_seed42 \
+  --out-dir outputs/comparisons
 ```
 
 ## Reproducibility Roadmap
@@ -175,7 +194,7 @@ python scripts/evaluate.py \
 2. Phase 1: RadioML lazy-loading dataset and split tooling
 3. Phase 2: baselines for AMC and spectrum sensing
 4. Phase 3: CNN1D training pipeline and evaluation
-5. Phase 4: ResNet1D, STFT-CNN, and broader experiments
+5. Phase 4: ResNet1D / MRResNet, STFT-CNN, and broader experiments
 6. Phase 5: multi-task AMC plus spectrum sensing model
 
 ## Initial CNN1D Notes
@@ -192,4 +211,5 @@ nvidia-smi --query-gpu=name,memory.total,memory.used,temperature.gpu,power.draw 
 ## Current Results Snapshot
 
 - Phase 4 code path supports AMP, checkpoint, resume, CSV log, TensorBoard, overall accuracy, accuracy vs SNR, and confusion matrix outputs.
+- Phase 5 adds ResNet1D-small and ResNet1D-medium with the same trainer/evaluate pipeline plus comparison-table tooling.
 - Real RadioML training/evaluation artifacts still depend on placing `GOLD_XYZ_OSC.0001_1024.hdf5` under `data/`.

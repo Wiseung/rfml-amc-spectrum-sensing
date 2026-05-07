@@ -1,2 +1,22 @@
-experiment:
-  name: resnet1d_phase0_placeholder
+model:
+  name: resnet1d-small
+  num_classes: 24
+  classifier_hidden_dim: 256
+  dropout: 0.2
+
+training:
+  epochs: 50
+  batch_size: 512
+  lr: 0.001
+  optimizer: adamw
+  weight_decay: 0.0001
+  amp: true
+  num_workers: 4
+  pin_memory: true
+  grad_clip: 1.0
+  early_stopping_patience: 8
+  save_every: 5
+
+runtime:
+  device: cuda
+  scan_chunk_size: 8192

@@ -19,6 +19,7 @@ from tqdm import tqdm
 from rfml.data.radioml2018 import RadioML2018Dataset
 from rfml.data.splits import SplitBundle, load_split_bundle, resolve_split_indices
 from rfml.models.cnn1d import CNN1D
+from rfml.models.resnet1d import build_resnet1d
 from rfml.training.losses import build_classification_loss
 from rfml.training.metrics import compute_accuracy
 
@@ -216,15 +217,22 @@ class RFMLTrainer:
         return float(np.mean(losses)), compute_accuracy(y_true, y_pred)
 
     def _build_model(self) -> nn.Module:
-        if self.config.model_name != "cnn1d":
-            raise ValueError(f"Unsupported model_name: {self.config.model_name}")
-        return CNN1D(
-            num_classes=self.config.num_classes,
-            dropout=self.config.dropout,
-            classifier_hidden_dim=self.config.classifier_hidden_dim,
-            channels=self.config.channels,
-            kernel_sizes=self.config.kernel_sizes,
-        )
+        if self.config.model_name == "cnn1d":
+            return CNN1D(
+                num_classes=self.config.num_classes,
+                dropout=self.config.dropout,
+                classifier_hidden_dim=self.config.classifier_hidden_dim,
+                channels=self.config.channels,
+                kernel_sizes=self.config.kernel_sizes,
+            )
+        if self.config.model_name in {"resnet1d-small", "resnet1d-medium"}:
+            return build_resnet1d(
+                self.config.model_name,
+                num_classes=self.config.num_classes,
+                dropout=self.config.dropout,
+                classifier_hidden_dim=self.config.classifier_hidden_dim,
+            )
+        raise ValueError(f"Unsupported model_name: {self.config.model_name}")
 
     def _build_optimizer(self) -> Optimizer:
         optimizer_name = self.config.optimizer.lower()

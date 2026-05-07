@@ -26,6 +26,7 @@ if str(SRC_DIR) not in sys.path:
 from rfml.data.radioml2018 import RadioML2018Dataset
 from rfml.data.splits import load_split_bundle, resolve_split_indices
 from rfml.models.cnn1d import CNN1D
+from rfml.models.resnet1d import build_resnet1d
 from rfml.training.metrics import (
     compute_accuracy,
     compute_accuracy_vs_snr,
@@ -104,13 +105,23 @@ def main() -> int:
     out_dir = Path(args.out_dir).expanduser().resolve() if args.out_dir else ckpt_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    model = CNN1D(
-        num_classes=config.num_classes,
-        dropout=config.dropout,
-        classifier_hidden_dim=config.classifier_hidden_dim,
-        channels=config.channels,
-        kernel_sizes=config.kernel_sizes,
-    )
+    if config.model_name == "cnn1d":
+        model = CNN1D(
+            num_classes=config.num_classes,
+            dropout=config.dropout,
+            classifier_hidden_dim=config.classifier_hidden_dim,
+            channels=config.channels,
+            kernel_sizes=config.kernel_sizes,
+        )
+    elif config.model_name in {"resnet1d-small", "resnet1d-medium"}:
+        model = build_resnet1d(
+            config.model_name,
+            num_classes=config.num_classes,
+            dropout=config.dropout,
+            classifier_hidden_dim=config.classifier_hidden_dim,
+        )
+    else:
+        raise ValueError(f"Unsupported model_name: {config.model_name}")
     payload = torch.load(ckpt_path, map_location="cpu")
     model.load_state_dict(payload["model_state_dict"])
     device = torch.device(config.device if torch.cuda.is_available() else "cpu")
