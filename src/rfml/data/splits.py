@@ -222,6 +222,17 @@ def load_split_bundle(split_path: str | Path) -> SplitBundle:
         )
 
 
+def resolve_split_indices(bundle: SplitBundle, split_name: str) -> np.ndarray:
+    normalized = split_name.lower()
+    if normalized == "train":
+        return bundle.train_indices
+    if normalized == "val":
+        return bundle.val_indices
+    if normalized == "test":
+        return bundle.test_indices
+    raise ValueError(f"Unsupported split name: {split_name}")
+
+
 def summarize_split_distribution(
     labels: np.ndarray,
     snrs: np.ndarray,

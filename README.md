@@ -2,12 +2,14 @@
 
 PyTorch project scaffold for automatic modulation classification (AMC) and spectrum sensing on the RadioML 2018.01A dataset.
 
-This repository is being built in phases. Phase 0 focuses on:
+This repository is being built in phases. Phases 0 to 4 currently cover:
 
 - project structure
 - environment validation
-- import and CUDA smoke tests
-- a minimal package layout that future phases can extend safely
+- lazy-loading RadioML 2018.01A dataset access
+- stratified modulation x SNR split generation
+- traditional baselines for AMC and spectrum sensing
+- 1D CNN training and evaluation
 
 ## Project Layout
 
@@ -137,14 +139,34 @@ Future phases will add:
 
 ## Planned Commands
 
-These commands are placeholders for later phases:
+Current commands:
 
 ```bash
-python scripts/inspect_dataset.py --help
-python scripts/make_splits.py --help
-python scripts/train.py --help
-python scripts/evaluate.py --help
-python scripts/run_sensing.py --help
+python scripts/inspect_dataset.py \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --max-samples 4096
+
+python scripts/make_splits.py \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --out outputs/splits/radioml2018_seed42.npz \
+  --seed 42
+
+python scripts/run_sensing.py \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --method energy \
+  --split outputs/splits/radioml2018_seed42.npz
+
+python scripts/train.py \
+  --config configs/cnn1d.yaml \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --out outputs/runs/cnn1d_seed42
+
+python scripts/evaluate.py \
+  --config configs/cnn1d.yaml \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --ckpt outputs/runs/cnn1d_seed42/best.pt
 ```
 
 ## Reproducibility Roadmap
@@ -152,6 +174,22 @@ python scripts/run_sensing.py --help
 1. Phase 0: scaffold, environment checks, smoke tests
 2. Phase 1: RadioML lazy-loading dataset and split tooling
 3. Phase 2: baselines for AMC and spectrum sensing
-4. Phase 3: CNN1D, ResNet1D, STFT-CNN training pipeline
-5. Phase 4: evaluation, plotting, and experiment report
+4. Phase 3: CNN1D training pipeline and evaluation
+5. Phase 4: ResNet1D, STFT-CNN, and broader experiments
 6. Phase 5: multi-task AMC plus spectrum sensing model
+
+## Initial CNN1D Notes
+
+- Default training config is [configs/cnn1d.yaml](/home/developer716/workspace/rfml-amc-spectrum-sensing/configs/cnn1d.yaml).
+- The intended starting point for this RTX 5090 24 GB laptop is `batch_size: 512`.
+- If thermals and power headroom allow, try `1024` or `2048`.
+- During long runs, monitor GPU memory, power, and temperature:
+
+```bash
+nvidia-smi --query-gpu=name,memory.total,memory.used,temperature.gpu,power.draw --format=csv,noheader
+```
+
+## Current Results Snapshot
+
+- Phase 4 code path supports AMP, checkpoint, resume, CSV log, TensorBoard, overall accuracy, accuracy vs SNR, and confusion matrix outputs.
+- Real RadioML training/evaluation artifacts still depend on placing `GOLD_XYZ_OSC.0001_1024.hdf5` under `data/`.
