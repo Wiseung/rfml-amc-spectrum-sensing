@@ -118,6 +118,7 @@ def main() -> int:
     split_bundle = load_split_bundle(split_path)
     split_indices = resolve_split_indices(split_bundle, args.split_name)
     transform = None
+    stft_in_channels = 1
     if config.model_name == "stft_cnn":
         transform = STFTTransform(
             n_fft=int(config.stft_n_fft or 128),
@@ -126,6 +127,7 @@ def main() -> int:
             output=str(config.stft_output or "log_power"),
             backend=str(config.stft_backend or "torch"),
         )
+        stft_in_channels = transform.num_channels
     if config.task == "multitask":
         dataset = MultiTaskRadioMLDataset(
             h5_path,
@@ -198,6 +200,7 @@ def main() -> int:
         )
     elif config.model_name == "stft_cnn":
         model = STFTCNN(
+            in_channels=stft_in_channels,
             num_classes=config.num_classes,
             channels=config.channels,
             dropout=config.dropout,

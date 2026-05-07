@@ -33,6 +33,28 @@ def test_stft_transform_scipy_backend_returns_expected_shape() -> None:
     assert torch.isfinite(spec).all()
 
 
+def test_stft_transform_log_power_phase_returns_two_channels() -> None:
+    t = np.linspace(0.0, 1.0, 1024, dtype=np.float32)
+    iq = np.stack([np.sin(2 * np.pi * 5 * t), np.cos(2 * np.pi * 5 * t)], axis=0)
+    transform = STFTTransform(n_fft=64, hop_length=16, output="log_power_phase", backend="torch")
+    spec = transform(iq)
+    assert spec.ndim == 3
+    assert spec.shape[0] == 2
+    assert transform.num_channels == 2
+    assert torch.isfinite(spec).all()
+
+
+def test_stft_transform_real_imag_returns_two_channels() -> None:
+    t = np.linspace(0.0, 1.0, 1024, dtype=np.float32)
+    iq = np.stack([np.sin(2 * np.pi * 7 * t), np.cos(2 * np.pi * 7 * t)], axis=0)
+    transform = STFTTransform(n_fft=64, hop_length=16, output="real_imag", backend="torch")
+    spec = transform(iq)
+    assert spec.ndim == 3
+    assert spec.shape[0] == 2
+    assert transform.num_channels == 2
+    assert torch.isfinite(spec).all()
+
+
 def test_dataset_applies_stft_transform(tmp_path: Path) -> None:
     h5_path = _build_stft_h5(tmp_path / "stft_dataset.h5")
     dataset = RadioML2018Dataset(h5_path, transform=STFTTransform(n_fft=64, hop_length=16))
@@ -57,6 +79,33 @@ def test_stft_cnn_deep_forward_shape() -> None:
         backbone="deep",
     )
     x = torch.randn(2, 1, 128, 33)
+    y = model(x)
+    assert tuple(y.shape) == (2, 24)
+
+
+def test_stft_cnn_deeper_forward_shape() -> None:
+    model = STFTCNN(
+        num_classes=24,
+        channels=(16, 32, 64),
+        classifier_hidden_dim=64,
+        dropout=0.1,
+        backbone="deeper",
+    )
+    x = torch.randn(2, 1, 128, 65)
+    y = model(x)
+    assert tuple(y.shape) == (2, 24)
+
+
+def test_stft_cnn_deeper_two_channel_forward_shape() -> None:
+    model = STFTCNN(
+        in_channels=2,
+        num_classes=24,
+        channels=(16, 32, 64),
+        classifier_hidden_dim=64,
+        dropout=0.1,
+        backbone="deeper",
+    )
+    x = torch.randn(2, 2, 128, 65)
     y = model(x)
     assert tuple(y.shape) == (2, 24)
 
@@ -89,7 +138,7 @@ def test_stft_trainer_runs(tmp_path: Path) -> None:
         stft_n_fft=64,
         stft_hop_length=16,
         stft_window="hann",
-        stft_output="log_power",
+        stft_output="log_power_phase",
         stft_backend="torch",
         stft_backbone="deep",
     )

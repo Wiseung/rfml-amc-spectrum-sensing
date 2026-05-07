@@ -74,6 +74,21 @@ class STFTCNN(nn.Module):
                 ResidualConvBlock2D(c3, c3, stride=1),
                 nn.AdaptiveAvgPool2d((1, 1)),
             )
+        elif normalized == "deeper":
+            self.features = nn.Sequential(
+                nn.Conv2d(in_channels, c1, kernel_size=5, stride=1, padding=2, bias=False),
+                nn.BatchNorm2d(c1),
+                nn.ReLU(inplace=True),
+                ResidualConvBlock2D(c1, c1, stride=1),
+                ResidualConvBlock2D(c1, c1, stride=1),
+                ResidualConvBlock2D(c1, c2, stride=2),
+                ResidualConvBlock2D(c2, c2, stride=1),
+                ResidualConvBlock2D(c2, c2, stride=1),
+                ResidualConvBlock2D(c2, c3, stride=2),
+                ResidualConvBlock2D(c3, c3, stride=1),
+                ResidualConvBlock2D(c3, c3, stride=1),
+                nn.AdaptiveAvgPool2d((1, 1)),
+            )
         else:
             raise ValueError(f"Unsupported STFT backbone: {backbone}")
         self.classifier = nn.Sequential(

@@ -102,6 +102,7 @@ class RFMLTrainer:
 
         self.device = torch.device(config.device)
         self.split_bundle = load_split_bundle(self.split_path)
+        self.stft_transform = self._build_stft_transform()
         self.model = self._build_model().to(self.device)
         self.criterion = build_classification_loss("cross_entropy")
         self.optimizer = self._build_optimizer()
@@ -331,6 +332,7 @@ class RFMLTrainer:
             )
         if self.config.model_name == "stft_cnn":
             return STFTCNN(
+                in_channels=self._stft_input_channels(),
                 num_classes=self.config.num_classes,
                 channels=self.config.channels,
                 dropout=self.config.dropout,
@@ -350,15 +352,7 @@ class RFMLTrainer:
         raise ValueError(f"Unsupported optimizer: {self.config.optimizer}")
 
     def _build_loader(self, split_name: str, *, shuffle: bool) -> DataLoader:
-        transform = None
-        if self.config.model_name == "stft_cnn":
-            transform = STFTTransform(
-                n_fft=int(self.config.stft_n_fft or 128),
-                hop_length=int(self.config.stft_hop_length or 32),
-                window=str(self.config.stft_window or "hann"),
-                output=str(self.config.stft_output or "log_power"),
-                backend=str(self.config.stft_backend or "torch"),
-            )
+        transform = self.stft_transform
         split_indices = resolve_split_indices(self.split_bundle, split_name)
         if self.config.task == "multitask":
             dataset = MultiTaskRadioMLDataset(
@@ -398,6 +392,20 @@ class RFMLTrainer:
             pin_memory=self.config.pin_memory,
             drop_last=False,
         )
+
+    def _build_stft_transform(self) -> STFTTransform | None:
+        if self.config.model_name != "stft_cnn":
+            return None
+        return STFTTransform(
+            n_fft=int(self.config.stft_n_fft or 128),
+            hop_length=int(self.config.stft_hop_length or 32),
+            window=str(self.config.stft_window or "hann"),
+            output=str(self.config.stft_output or "log_power"),
+            backend=str(self.config.stft_backend or "torch"),
+        )
+
+    def _stft_input_channels(self) -> int:
+        return self.stft_transform.num_channels if self.stft_transform is not None else 1
 
     def _evaluate_multitask_loader(self, loader: DataLoader) -> EvaluationOutputs:
         self.model.eval()

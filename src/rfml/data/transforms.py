@@ -10,7 +10,14 @@ import torch
 
 
 STFTBackend = Literal["torch", "scipy"]
-STFTOutput = Literal["magnitude", "power", "log_power"]
+STFTOutput = Literal[
+    "magnitude",
+    "power",
+    "log_power",
+    "log_power_phase",
+    "real_imag",
+    "log_power_real_imag",
+]
 
 
 @dataclass(frozen=True)
@@ -42,6 +49,16 @@ class STFTTransform:
         else:
             spec = self._scipy_stft(complex_signal)
         return self._postprocess(spec)
+
+    @property
+    def num_channels(self) -> int:
+        if self.output in {"magnitude", "power", "log_power"}:
+            return 1
+        if self.output in {"log_power_phase", "real_imag"}:
+            return 2
+        if self.output == "log_power_real_imag":
+            return 3
+        raise ValueError(f"Unsupported output type: {self.output}")
 
     def _to_tensor(self, iq: torch.Tensor | np.ndarray) -> torch.Tensor:
         if isinstance(iq, torch.Tensor):
@@ -86,4 +103,13 @@ class STFTTransform:
             return power.unsqueeze(0)
         if self.output == "log_power":
             return torch.log10(power + 1e-8).unsqueeze(0)
+        if self.output == "log_power_phase":
+            log_power = torch.log10(power + 1e-8)
+            phase = torch.angle(spec) / torch.pi
+            return torch.stack([log_power, phase], dim=0)
+        if self.output == "real_imag":
+            return torch.stack([spec.real, spec.imag], dim=0)
+        if self.output == "log_power_real_imag":
+            log_power = torch.log10(power + 1e-8)
+            return torch.stack([log_power, spec.real, spec.imag], dim=0)
         raise ValueError(f"Unsupported output type: {self.output}")

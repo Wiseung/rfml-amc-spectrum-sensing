@@ -30,28 +30,28 @@ Real split:
 - classes: `24`
 - split artifact: `outputs/splits/radioml2018_seed42.npz`
 
-Verified round-1 results:
+Verified headline results from the strongest completed run of each route:
 
 | Task | Model | Result |
 | --- | --- | ---: |
 | AMC | SVM statistical baseline | `0.3714` |
 | AMC | RandomForest statistical baseline | `0.4152` |
-| AMC | STFT-CNN | `0.3433` |
+| AMC | STFT-CNN round-3 | `0.4982` |
 | AMC | CNN1D | `0.5232` |
 | AMC | ResNet1D-small | `0.5984` |
-| AMC + Sensing | Multi-task shared encoder | modulation `0.4563`, sensing AUC `0.9858` |
+| AMC + Sensing | Multi-task shared encoder round-2 | modulation `0.5699`, sensing AUC `0.9861` |
 | Sensing | Energy Detection ROC-AUC | `0.5210` |
 | Sensing | CNN detector accuracy | `0.8491` |
 | Sensing | CNN detector ROC-AUC | `0.9834` |
 
-Round-1 takeaway:
+Current experiment takeaway:
 
 - `ResNet1D` is the strongest AMC model in the current single-GPU budget
-- the current lightweight `STFT-CNN` setup does not beat time-domain models
+- the current best completed `STFT-CNN` route (`round-3`) is much stronger than the initial spectrogram baseline, but still does not beat time-domain `CNN1D` or `ResNet1D`
 - deep spectrum sensing is dramatically stronger than the energy-detection baseline
-- the first multi-task run improved sensing slightly over the single-task detector, but reduced AMC accuracy relative to single-task CNN1D and ResNet1D
+- the tuned multi-task setting restores AMC above single-task `CNN1D` while keeping sensing ROC-AUC above `0.986`, but it still trails the dedicated single-task `ResNet1D-small`
 
-Round-2 tuning highlight:
+Recent tuning highlights:
 
 - tuned multi-task config `configs/multitask_round2_resnet_lambda0p2_pos0p75.yaml`
   reached modulation accuracy `0.5699`
@@ -59,7 +59,10 @@ Round-2 tuning highlight:
   ROC-AUC `0.9861`
 - the tuned run is still below single-task `ResNet1D-small` (`0.5984`), so the current
   shared-encoder setting is a partial recovery rather than a full Pareto improvement
-- the deep-backbone STFT round-2 sweep is in progress
+- deep-backbone STFT round-3 with `n_fft=128, hop=16` and a deeper residual 2D backbone
+  reached test accuracy `0.4982`
+- this is a large improvement over round-1 STFT (`0.3433`) and a further gain over
+  STFT round-2 (`0.4722`), but it still does not beat `CNN1D` (`0.5232`)
 
 ## Project Layout
 
@@ -358,6 +361,26 @@ Round-1 AMC artifacts:
 - [outputs/runs/stft_cnn_round1_seed42_eval/summary.json](/home/developer716/workspace/rfml-amc-spectrum-sensing/outputs/runs/stft_cnn_round1_seed42_eval/summary.json)
 - [outputs/comparisons/acc_vs_snr_compare.png](/home/developer716/workspace/rfml-amc-spectrum-sensing/outputs/comparisons/acc_vs_snr_compare.png)
 
+Round-3 STFT result:
+
+- config: `configs/stft_cnn_round3_nfft128_hop16_deeper.yaml`
+- test accuracy: `0.4982`
+- low-SNR mean accuracy (`<= 0 dB`): `0.1933`
+- high-SNR mean accuracy (`>= 16 dB`): `0.7446`
+
+Interpretation:
+
+- the deeper residual 2D backbone plus the denser STFT hop improved the spectrogram
+  route over both round-1 and round-2
+- compared with STFT round-2, the round-3 gain came mostly from a higher high-SNR
+  ceiling: low-SNR mean improved only slightly (`0.1909 -> 0.1933`), while high-SNR
+  mean improved more clearly (`0.6939 -> 0.7446`)
+- relative to `CNN1D`, the current STFT model is still lower overall, but the gap is
+  now much smaller than in earlier STFT rounds
+- the next sweep focus should be richer spectrogram channels such as
+  `log_power_phase`, because the current single-channel log-power route still leaves
+  accuracy on the table
+
 ## Deep Spectrum Sensing
 
 Train the binary CNN detector:
@@ -464,7 +487,7 @@ python scripts/compare_results.py \
   --baseline-overall-acc 0.3714166666666667 \
   --cnn-run-dir outputs/runs/cnn1d_round1_seed42_eval \
   --resnet-run-dir outputs/runs/resnet1d_round1_seed42_eval \
-  --stft-run-dir outputs/runs/stft_cnn_round1_seed42_eval \
+  --stft-run-dir outputs/runs/stft_cnn_round3_nfft128_hop16_deeper_eval \
   --multitask-run-dir outputs/runs/multitask_round2_resnet_lambda0p2_pos0p75_eval \
   --out-dir outputs/comparisons
 ```
