@@ -1,0 +1,30 @@
+model:
+  name: stft_cnn
+  num_classes: 24
+  channels: [32, 64, 128]
+  classifier_hidden_dim: 256
+  dropout: 0.3
+  stft_n_fft: 256
+  stft_hop_length: 32
+  stft_window: hann
+  stft_output: log_power
+  stft_backend: torch
+  stft_backbone: deep
+
+training:
+  epochs: 8
+  batch_size: 256
+  lr: 0.001
+  optimizer: adamw
+  weight_decay: 0.0001
+  amp: true
+  num_workers: 4
+  pin_memory: true
+  grad_clip: 1.0
+  early_stopping_patience: 4
+  save_every: 2
+  best_metric: val_acc
+
+runtime:
+  device: cuda
+  scan_chunk_size: 8192

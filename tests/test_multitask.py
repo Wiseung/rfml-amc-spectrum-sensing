@@ -89,6 +89,7 @@ def test_multitask_trainer_runs(tmp_path: Path) -> None:
         sensing_noise_power=None,
         sensing_seed=42,
         lambda_sensing=1.0,
+        best_metric="val_acc",
     )
     trainer = RFMLTrainer(
         config,
@@ -98,6 +99,7 @@ def test_multitask_trainer_runs(tmp_path: Path) -> None:
     )
     result = trainer.fit()
     assert len(result["history"]) == 2
+    assert (tmp_path / "run" / "best.pt").exists()
 
 
 def _build_multitask_h5(path: Path) -> Path:

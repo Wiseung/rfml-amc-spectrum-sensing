@@ -22,7 +22,7 @@ Current code paths are fully smoke-tested on tiny synthetic datasets.
 Real RadioML 2018.01A round-1 experiments have been run on
 `data/GOLD_XYZ_OSC.0001_1024.hdf5`.
 
-## Round-1 Real Results
+## Real Results
 
 Real split:
 
@@ -50,6 +50,16 @@ Round-1 takeaway:
 - the current lightweight `STFT-CNN` setup does not beat time-domain models
 - deep spectrum sensing is dramatically stronger than the energy-detection baseline
 - the first multi-task run improved sensing slightly over the single-task detector, but reduced AMC accuracy relative to single-task CNN1D and ResNet1D
+
+Round-2 tuning highlight:
+
+- tuned multi-task config `configs/multitask_round2_resnet_lambda0p2_pos0p75.yaml`
+  reached modulation accuracy `0.5699`
+- this restores multi-task AMC above `CNN1D` (`0.5232`) while keeping strong sensing
+  ROC-AUC `0.9861`
+- the tuned run is still below single-task `ResNet1D-small` (`0.5984`), so the current
+  shared-encoder setting is a partial recovery rather than a full Pareto improvement
+- the deep-backbone STFT round-2 sweep is in progress
 
 ## Project Layout
 
@@ -425,6 +435,25 @@ Interpretation:
 - the shared encoder produced slightly better sensing metrics than the single-task sensing CNN
 - the same run underperformed single-task `CNN1D` and `ResNet1D` on AMC, so the current joint-loss setting is not yet a Pareto improvement
 
+Round-2 tuned multi-task result:
+
+- config: `configs/multitask_round2_resnet_lambda0p2_pos0p75.yaml`
+- modulation accuracy: `0.5699`
+- sensing accuracy: `0.8585`
+- sensing ROC-AUC: `0.9861`
+- `Pd @ Pfa = 0.10`: `0.9728`
+- `Pd @ Pfa = 0.05`: `0.8808`
+- low-SNR mean AMC accuracy (`<= 0 dB`): `0.1758`
+- high-SNR mean AMC accuracy (`>= 16 dB`): `0.9066`
+
+Interpretation:
+
+- selecting the best checkpoint by `val_acc` and reducing `lambda_sensing` to `0.2`
+  recovered AMC performance substantially
+- the tuned multi-task run now beats single-task `CNN1D` on AMC while preserving
+  near-identical sensing AUC
+- the current best single-task AMC model is still `ResNet1D-small`
+
 ## Comparison
 
 Build compact comparison tables and an `accuracy vs SNR` overlay:
@@ -436,7 +465,7 @@ python scripts/compare_results.py \
   --cnn-run-dir outputs/runs/cnn1d_round1_seed42_eval \
   --resnet-run-dir outputs/runs/resnet1d_round1_seed42_eval \
   --stft-run-dir outputs/runs/stft_cnn_round1_seed42_eval \
-  --multitask-run-dir outputs/runs/multitask_round1_seed42_eval \
+  --multitask-run-dir outputs/runs/multitask_round2_resnet_lambda0p2_pos0p75_eval \
   --out-dir outputs/comparisons
 ```
 

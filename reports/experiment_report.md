@@ -310,6 +310,44 @@ Interpretation:
   accuracy
 - the current `lambda_sensing` and sampling balance are therefore better for the
   sensing objective than for preserving AMC performance
+
+### 7.5 Multi-task round-2 tuning
+
+To recover AMC performance, the second multi-task sweep changed three things:
+
+- shared backbone switched to `resnet1d-small`
+- `lambda_sensing` reduced from the earlier stronger joint setting to `0.2`
+- checkpoint selection changed from `val_loss` to `val_acc`
+
+Best tuned config:
+
+```text
+configs/multitask_round2_resnet_lambda0p2_pos0p75.yaml
+```
+
+Final test metrics:
+
+- modulation accuracy: `0.5699`
+- sensing accuracy: `0.8585`
+- sensing ROC-AUC: `0.9861`
+- `Pd @ Pfa = 0.10`: `0.9728`
+- `Pd @ Pfa = 0.05`: `0.8808`
+
+SNR trend:
+
+- low-SNR mean AMC accuracy (`<= 0 dB`): `0.1758`
+- high-SNR mean AMC accuracy (`>= 16 dB`): `0.9066`
+
+Interpretation:
+
+- this run successfully recovered AMC above single-task `CNN1D` (`0.5232`)
+- sensing quality remained essentially unchanged versus the previous multi-task
+  run, with ROC-AUC still above `0.986`
+- the tuned shared model still does not beat single-task `ResNet1D-small`
+  (`0.5984`), so the best current AMC operating point remains the dedicated
+  ResNet classifier
+- in practice, the round-2 result is a meaningful step toward a usable
+  multi-task trade-off rather than a final Pareto-optimal setting
 ## 8. Reproduction Commands
 
 ### 7.1 Environment smoke test
@@ -445,6 +483,25 @@ python scripts/evaluate.py \
   --ckpt outputs/runs/multitask_seed42/best.pt
 ```
 
+Round-2 tuned reproduction command:
+
+```bash
+python scripts/train.py \
+  --config configs/multitask_round2_resnet_lambda0p2_pos0p75.yaml \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --out outputs/runs/multitask_round2_resnet_lambda0p2_pos0p75
+```
+
+```bash
+python scripts/evaluate.py \
+  --config configs/multitask_round2_resnet_lambda0p2_pos0p75.yaml \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --ckpt outputs/runs/multitask_round2_resnet_lambda0p2_pos0p75/best.pt \
+  --out-dir outputs/runs/multitask_round2_resnet_lambda0p2_pos0p75_eval
+```
+
 ## 8. Metrics To Report
 
 ### 8.1 AMC
@@ -519,7 +576,8 @@ Completed round-1 table:
 | STFT-CNN | AMC | `0.3433` | current spectrogram setup underperformed |
 | Energy Detection | Sensing | ROC-AUC `0.5210` | non-deep baseline |
 | CNN1D detector | Sensing | acc `0.8491`, AUC `0.9834` | binary deep sensing |
-| Multi-task | AMC + Sensing | AMC `0.4563`, sensing AUC `0.9858` | shared encoder improved sensing, hurt AMC |
+| Multi-task round-1 | AMC + Sensing | AMC `0.4563`, sensing AUC `0.9858` | shared encoder improved sensing, hurt AMC |
+| Multi-task round-2 | AMC + Sensing | AMC `0.5699`, sensing AUC `0.9861` | tuned loss balance restores AMC above CNN1D |
 
 ## 12. Discussion Points To Fill After Real Runs
 
@@ -534,3 +592,6 @@ Completed round-1 table:
 - the current multi-task model improved sensing slightly further to ROC-AUC
   `0.9858`, but it did not preserve AMC performance, so the shared-task balance
   still needs tuning
+- the round-2 tuning result confirms that checkpoint criterion and task-loss
+  balance matter materially; the current best multi-task setup is now viable for
+  joint deployment, though still short of single-task ResNet AMC accuracy

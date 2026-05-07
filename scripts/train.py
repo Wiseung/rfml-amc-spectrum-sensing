@@ -66,10 +66,12 @@ def load_config(path: str | Path) -> TrainerConfig:
         stft_window=model_cfg.get("stft_window"),
         stft_output=model_cfg.get("stft_output"),
         stft_backend=model_cfg.get("stft_backend"),
+        stft_backbone=str(model_cfg.get("stft_backbone", "basic")),
         sensing_positive_ratio=task_cfg.get("positive_ratio"),
         sensing_noise_power=task_cfg.get("noise_power"),
         sensing_seed=int(task_cfg.get("seed", 42)),
         lambda_sensing=float(task_cfg.get("lambda_sensing", 1.0)),
+        best_metric=str(train_cfg.get("best_metric", "val_loss")),
     )
 
 

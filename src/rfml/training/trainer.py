@@ -62,6 +62,8 @@ class TrainerConfig:
     sensing_noise_power: float | None = None
     sensing_seed: int = 42
     lambda_sensing: float = 1.0
+    stft_backbone: str = "basic"
+    best_metric: str = "val_loss"
 
 
 @dataclass(frozen=True)
@@ -106,6 +108,7 @@ class RFMLTrainer:
         self.scaler = torch.amp.GradScaler("cuda", enabled=config.amp and self.device.type == "cuda")
         self.writer = SummaryWriter(log_dir=str(self.tb_dir))
         self.best_val_loss = float("inf")
+        self.best_metric_value = float("inf") if self._best_metric_mode() == "min" else float("-inf")
         self.start_epoch = 0
         self.history: list[dict[str, float | int]] = []
 
@@ -135,9 +138,11 @@ class RFMLTrainer:
             self._append_csv_row(row)
             self._log_tensorboard(epoch, row)
 
-            is_best = val_loss < self.best_val_loss
+            current_metric = self._metric_value_from_row(row)
+            is_best = self._is_better_metric(current_metric)
             if is_best:
                 self.best_val_loss = val_loss
+                self.best_metric_value = current_metric
                 patience_counter = 0
             else:
                 patience_counter += 1
@@ -330,6 +335,7 @@ class RFMLTrainer:
                 channels=self.config.channels,
                 dropout=self.config.dropout,
                 classifier_hidden_dim=self.config.classifier_hidden_dim,
+                backbone=self.config.stft_backbone,
             )
         raise ValueError(f"Unsupported model_name: {self.config.model_name}")
 
@@ -482,6 +488,8 @@ class RFMLTrainer:
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scaler_state_dict": self.scaler.state_dict(),
             "best_val_loss": self.best_val_loss,
+            "best_metric": self.config.best_metric,
+            "best_metric_value": self.best_metric_value,
             "config": self.config.__dict__,
             "split_path": str(self.split_path),
             "h5_path": str(self.h5_path),
@@ -501,4 +509,23 @@ class RFMLTrainer:
         self.optimizer.load_state_dict(payload["optimizer_state_dict"])
         self.scaler.load_state_dict(payload["scaler_state_dict"])
         self.best_val_loss = float(payload.get("best_val_loss", float("inf")))
+        default_metric_value = float("inf") if self._best_metric_mode() == "min" else float("-inf")
+        self.best_metric_value = float(payload.get("best_metric_value", default_metric_value))
         self.start_epoch = int(payload.get("epoch", 0))
+
+    def _best_metric_mode(self) -> str:
+        metric_name = self.config.best_metric.lower()
+        if metric_name == "val_loss":
+            return "min"
+        if metric_name == "val_acc":
+            return "max"
+        raise ValueError(f"Unsupported best_metric: {self.config.best_metric}")
+
+    def _metric_value_from_row(self, row: dict[str, float | int]) -> float:
+        metric_name = self.config.best_metric.lower()
+        return float(row[metric_name])
+
+    def _is_better_metric(self, current_metric: float) -> bool:
+        if self._best_metric_mode() == "min":
+            return current_metric < self.best_metric_value
+        return current_metric > self.best_metric_value
