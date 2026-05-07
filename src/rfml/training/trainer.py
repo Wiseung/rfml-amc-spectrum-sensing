@@ -17,6 +17,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from rfml.data.radioml2018 import RadioML2018Dataset
+from rfml.data.spectrum_sensing import SpectrumSensingDataset
 from rfml.data.splits import SplitBundle, load_split_bundle, resolve_split_indices
 from rfml.data.transforms import STFTTransform
 from rfml.models.cnn1d import CNN1D
@@ -28,6 +29,7 @@ from rfml.training.metrics import compute_accuracy
 
 @dataclass(frozen=True)
 class TrainerConfig:
+    task: str
     model_name: str
     num_classes: int
     epochs: int
@@ -52,6 +54,9 @@ class TrainerConfig:
     stft_window: str | None = None
     stft_output: str | None = None
     stft_backend: str | None = None
+    sensing_positive_ratio: float | None = None
+    sensing_noise_power: float | None = None
+    sensing_seed: int = 42
 
 
 @dataclass(frozen=True)
@@ -268,13 +273,26 @@ class RFMLTrainer:
                 output=str(self.config.stft_output or "log_power"),
                 backend=str(self.config.stft_backend or "torch"),
             )
-        dataset = RadioML2018Dataset(
-            self.h5_path,
-            split_indices=resolve_split_indices(self.split_bundle, split_name),
-            class_names=self.split_bundle.class_names,
-            scan_chunk_size=self.config.scan_chunk_size,
-            transform=transform,
-        )
+        split_indices = resolve_split_indices(self.split_bundle, split_name)
+        if self.config.task == "spectrum_sensing":
+            dataset = SpectrumSensingDataset(
+                self.h5_path,
+                split_indices=split_indices,
+                class_names=self.split_bundle.class_names,
+                scan_chunk_size=self.config.scan_chunk_size,
+                transform=transform,
+                positive_ratio=float(self.config.sensing_positive_ratio or 0.5),
+                noise_power=self.config.sensing_noise_power,
+                seed=self.config.sensing_seed,
+            )
+        else:
+            dataset = RadioML2018Dataset(
+                self.h5_path,
+                split_indices=split_indices,
+                class_names=self.split_bundle.class_names,
+                scan_chunk_size=self.config.scan_chunk_size,
+                transform=transform,
+            )
         return DataLoader(
             dataset,
             batch_size=self.config.batch_size,

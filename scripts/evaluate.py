@@ -25,8 +25,10 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from rfml.data.radioml2018 import RadioML2018Dataset
+from rfml.data.spectrum_sensing import SpectrumSensingDataset
 from rfml.data.splits import load_split_bundle, resolve_split_indices
 from rfml.data.transforms import STFTTransform
+from rfml.eval.sensing_metrics import evaluate_sensing_predictions, plot_pd_vs_snr, plot_sensing_roc
 from rfml.models.cnn1d import CNN1D
 from rfml.models.resnet1d import build_resnet1d
 from rfml.models.stft_cnn import STFTCNN
@@ -57,7 +59,9 @@ def load_config(path: str | Path) -> TrainerConfig:
     model_cfg = data["model"]
     train_cfg = data["training"]
     runtime_cfg = data.get("runtime", {})
+    task_cfg = data.get("task", {})
     return TrainerConfig(
+        task=str(task_cfg.get("name", "amc")),
         model_name=model_cfg["name"],
         num_classes=int(model_cfg["num_classes"]),
         epochs=int(train_cfg["epochs"]),
@@ -82,6 +86,9 @@ def load_config(path: str | Path) -> TrainerConfig:
         stft_window=model_cfg.get("stft_window"),
         stft_output=model_cfg.get("stft_output"),
         stft_backend=model_cfg.get("stft_backend"),
+        sensing_positive_ratio=task_cfg.get("positive_ratio"),
+        sensing_noise_power=task_cfg.get("noise_power"),
+        sensing_seed=int(task_cfg.get("seed", 42)),
     )
 
 
@@ -112,13 +119,27 @@ def main() -> int:
             output=str(config.stft_output or "log_power"),
             backend=str(config.stft_backend or "torch"),
         )
-    dataset = RadioML2018Dataset(
-        h5_path,
-        split_indices=split_indices,
-        class_names=split_bundle.class_names,
-        scan_chunk_size=config.scan_chunk_size,
-        transform=transform,
-    )
+    if config.task == "spectrum_sensing":
+        dataset = SpectrumSensingDataset(
+            h5_path,
+            split_indices=split_indices,
+            class_names=split_bundle.class_names,
+            scan_chunk_size=config.scan_chunk_size,
+            transform=transform,
+            positive_ratio=float(config.sensing_positive_ratio or 0.5),
+            noise_power=config.sensing_noise_power,
+            seed=config.sensing_seed,
+        )
+        class_names = list(dataset.class_names)
+    else:
+        dataset = RadioML2018Dataset(
+            h5_path,
+            split_indices=split_indices,
+            class_names=split_bundle.class_names,
+            scan_chunk_size=config.scan_chunk_size,
+            transform=transform,
+        )
+        class_names = split_bundle.class_names
     loader = DataLoader(
         dataset,
         batch_size=config.batch_size,
@@ -164,14 +185,17 @@ def main() -> int:
     ys = []
     preds = []
     snrs = []
+    scores = []
     with torch.no_grad():
         for batch in loader:
             x = batch["iq"].to(device, non_blocking=config.pin_memory)
             logits = model(x)
             batch_preds = torch.argmax(logits, dim=1).cpu().numpy()
+            batch_probs = torch.softmax(logits, dim=1).cpu().numpy()
             ys.extend(batch["label"].cpu().numpy().tolist())
             preds.extend(batch_preds.tolist())
             snrs.extend(batch["snr"].cpu().numpy().astype(np.float32).tolist())
+            scores.extend(batch_probs[:, 1].astype(np.float32).tolist())
 
     y_true = np.asarray(ys, dtype=np.int64)
     y_pred = np.asarray(preds, dtype=np.int64)
@@ -182,28 +206,44 @@ def main() -> int:
     report_text, report_dict = compute_classification_report(
         y_true,
         y_pred,
-        class_names=split_bundle.class_names,
+        class_names=class_names,
     )
     cm = compute_confusion_matrix(y_true, y_pred, num_classes=config.num_classes)
 
     acc_vs_snr_path = plot_accuracy_vs_snr(acc_vs_snr_df, out_dir / "acc_vs_snr.png")
-    confusion_path = plot_confusion_matrix(cm, out_dir / "confusion_matrix.png", class_names=split_bundle.class_names)
+    confusion_path = plot_confusion_matrix(cm, out_dir / "confusion_matrix.png", class_names=class_names)
     acc_vs_snr_df.to_csv(out_dir / "accuracy_vs_snr.csv", index=False)
     pd.DataFrame(cm).to_csv(out_dir / "confusion_matrix.csv", index=False)
     (out_dir / "classification_report.txt").write_text(report_text, encoding="utf-8")
     (out_dir / "classification_report.json").write_text(json.dumps(report_dict, indent=2), encoding="utf-8")
-    (out_dir / "summary.json").write_text(
-        json.dumps(
+    summary_payload = {
+        "overall_accuracy": accuracy,
+        "num_samples": int(len(dataset)),
+        "split": args.split_name,
+        "ckpt": str(ckpt_path),
+        "task": config.task,
+    }
+    if config.task == "spectrum_sensing":
+        sensing_result = evaluate_sensing_predictions(
+            y_true,
+            np.asarray(scores, dtype=np.float32),
+            snr_array,
+        )
+        sensing_result.metrics.to_csv(out_dir / "sensing_metrics.csv", index=False)
+        sensing_result.roc_curve.to_csv(out_dir / "sensing_roc_curve.csv", index=False)
+        sensing_result.pd_vs_snr.to_csv(out_dir / "pd_vs_snr.csv", index=False)
+        roc_path = plot_sensing_roc(out_dir / "sensing_roc.png", sensing_result.roc_curve)
+        pd_snr_path = plot_pd_vs_snr(out_dir / "pd_vs_snr.png", sensing_result.pd_vs_snr)
+        summary_payload.update(
             {
-                "overall_accuracy": accuracy,
-                "num_samples": int(len(dataset)),
-                "split": args.split_name,
-                "ckpt": str(ckpt_path),
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+                "roc_auc": sensing_result.auc_value,
+                "pd_at_pfa_0p10": float(sensing_result.metrics.loc[0, "pd_at_pfa_0p10"]),
+                "pd_at_pfa_0p05": float(sensing_result.metrics.loc[0, "pd_at_pfa_0p05"]),
+                "sensing_roc_png": str(roc_path),
+                "pd_vs_snr_png": str(pd_snr_path),
+            }
+        )
+    (out_dir / "summary.json").write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
 
     print(f"delegated_conda_env: {delegated_env_name() or '<none>'}")
     print(f"overall_accuracy: {accuracy:.6f}")
@@ -211,6 +251,10 @@ def main() -> int:
     print(f"acc_vs_snr_png: {acc_vs_snr_path}")
     print(f"confusion_matrix_png: {confusion_path}")
     print(f"classification_report_txt: {out_dir / 'classification_report.txt'}")
+    if config.task == "spectrum_sensing":
+        print(f"sensing_metrics_csv: {out_dir / 'sensing_metrics.csv'}")
+        print(f"sensing_roc_png: {out_dir / 'sensing_roc.png'}")
+        print(f"pd_vs_snr_png: {out_dir / 'pd_vs_snr.png'}")
     return 0
 
 

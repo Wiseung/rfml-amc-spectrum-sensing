@@ -19,6 +19,7 @@ def test_trainer_runs_and_saves_checkpoints(tmp_path: Path) -> None:
     out_dir = tmp_path / "run"
 
     config = TrainerConfig(
+        task="amc",
         model_name="cnn1d",
         num_classes=4,
         epochs=5,

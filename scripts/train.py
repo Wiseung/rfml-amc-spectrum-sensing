@@ -37,7 +37,9 @@ def load_config(path: str | Path) -> TrainerConfig:
     model_cfg = data["model"]
     train_cfg = data["training"]
     runtime_cfg = data.get("runtime", {})
+    task_cfg = data.get("task", {})
     return TrainerConfig(
+        task=str(task_cfg.get("name", "amc")),
         model_name=model_cfg["name"],
         num_classes=int(model_cfg["num_classes"]),
         epochs=int(train_cfg["epochs"]),
@@ -62,6 +64,9 @@ def load_config(path: str | Path) -> TrainerConfig:
         stft_window=model_cfg.get("stft_window"),
         stft_output=model_cfg.get("stft_output"),
         stft_backend=model_cfg.get("stft_backend"),
+        sensing_positive_ratio=task_cfg.get("positive_ratio"),
+        sensing_noise_power=task_cfg.get("noise_power"),
+        sensing_seed=int(task_cfg.get("seed", 42)),
     )
 
 

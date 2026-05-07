@@ -4,58 +4,45 @@ from pathlib import Path
 
 import h5py
 import numpy as np
-import torch
 
-from rfml.data.radioml2018 import RadioML2018Dataset
+from rfml.data.spectrum_sensing import SpectrumSensingDataset
 from rfml.data.splits import create_stratified_splits_from_h5, save_split_bundle
-from rfml.data.transforms import STFTTransform
-from rfml.models.stft_cnn import STFTCNN
+from rfml.eval.sensing_metrics import evaluate_sensing_predictions
 from rfml.training.trainer import RFMLTrainer, TrainerConfig
 
 
-def test_stft_transform_returns_expected_shape() -> None:
-    t = np.linspace(0.0, 1.0, 1024, dtype=np.float32)
-    iq = np.stack([np.sin(2 * np.pi * 3 * t), np.cos(2 * np.pi * 3 * t)], axis=0)
-    transform = STFTTransform(n_fft=128, hop_length=32, output="log_power", backend="torch")
-    spec = transform(iq)
-    assert spec.ndim == 3
-    assert spec.shape[0] == 1
-    assert torch.isfinite(spec).all()
+def test_spectrum_sensing_dataset_balances_positive_negative(tmp_path: Path) -> None:
+    h5_path = _build_sensing_h5(tmp_path / "sensing.h5")
+    dataset = SpectrumSensingDataset(h5_path, positive_ratio=0.5, seed=42, max_samples=32)
+    labels = [int(dataset[idx]["label"].item()) for idx in range(len(dataset))]
+    assert len(dataset) == 32
+    assert sum(labels) == 16
+    assert labels.count(0) == 16
+    noise_idx = next(idx for idx in range(len(dataset)) if int(dataset[idx]["label"].item()) == 0)
+    noise_sample = dataset[noise_idx]
+    assert tuple(noise_sample["iq"].shape) == (2, 1024)
 
 
-def test_stft_transform_scipy_backend_returns_expected_shape() -> None:
-    t = np.linspace(0.0, 1.0, 1024, dtype=np.float32)
-    iq = np.stack([np.sin(2 * np.pi * 5 * t), np.cos(2 * np.pi * 5 * t)], axis=0)
-    transform = STFTTransform(n_fft=64, hop_length=16, output="power", backend="scipy")
-    spec = transform(iq)
-    assert spec.ndim == 3
-    assert spec.shape[0] == 1
-    assert torch.isfinite(spec).all()
+def test_sensing_metrics_return_expected_columns() -> None:
+    y_true = np.array([1, 1, 1, 0, 0, 0], dtype=np.int64)
+    y_score = np.array([0.9, 0.8, 0.55, 0.45, 0.2, 0.1], dtype=np.float32)
+    snrs = np.array([-10.0, 0.0, 10.0, -10.0, 0.0, 10.0], dtype=np.float32)
+    result = evaluate_sensing_predictions(y_true, y_score, snrs)
+    assert 0.0 <= result.accuracy <= 1.0
+    assert 0.0 <= result.auc_value <= 1.0
+    assert "pd_at_pfa_0p10" in result.metrics.columns
+    assert "pd_at_pfa_0p05" in result.metrics.columns
+    assert "pd_at_pfa_0p10" in result.pd_vs_snr.columns
 
 
-def test_dataset_applies_stft_transform(tmp_path: Path) -> None:
-    h5_path = _build_stft_h5(tmp_path / "stft_dataset.h5")
-    dataset = RadioML2018Dataset(h5_path, transform=STFTTransform(n_fft=64, hop_length=16))
-    sample = dataset[0]
-    assert sample["iq"].ndim == 3
-    assert sample["iq"].shape[0] == 1
-
-
-def test_stft_cnn_forward_shape() -> None:
-    model = STFTCNN(num_classes=24, channels=(16, 32, 64), classifier_hidden_dim=64, dropout=0.1)
-    x = torch.randn(2, 1, 128, 33)
-    y = model(x)
-    assert tuple(y.shape) == (2, 24)
-
-
-def test_stft_trainer_runs(tmp_path: Path) -> None:
-    h5_path = _build_stft_h5(tmp_path / "stft_train.h5")
+def test_spectrum_sensing_trainer_runs(tmp_path: Path) -> None:
+    h5_path = _build_sensing_h5(tmp_path / "sensing_train.h5")
     split_bundle = create_stratified_splits_from_h5(h5_path, seed=42)
     split_path = save_split_bundle(split_bundle, tmp_path / "splits.npz")
     config = TrainerConfig(
-        task="amc",
-        model_name="stft_cnn",
-        num_classes=4,
+        task="spectrum_sensing",
+        model_name="cnn1d",
+        num_classes=2,
         epochs=2,
         batch_size=16,
         lr=1e-3,
@@ -73,11 +60,9 @@ def test_stft_trainer_runs(tmp_path: Path) -> None:
         kernel_sizes=(7, 5, 3),
         save_every=2,
         scan_chunk_size=256,
-        stft_n_fft=64,
-        stft_hop_length=16,
-        stft_window="hann",
-        stft_output="log_power",
-        stft_backend="torch",
+        sensing_positive_ratio=0.5,
+        sensing_noise_power=None,
+        sensing_seed=42,
     )
     trainer = RFMLTrainer(
         config,
@@ -89,10 +74,10 @@ def test_stft_trainer_runs(tmp_path: Path) -> None:
     assert len(result["history"]) == 2
 
 
-def _build_stft_h5(path: Path) -> Path:
+def _build_sensing_h5(path: Path) -> Path:
     class_defs = [("BPSK", 1.0), ("QPSK", 2.0), ("QAM16", 3.0), ("QAM64", 4.0)]
     snrs = [-20.0, -10.0, 0.0, 10.0]
-    repeats = 4
+    repeats = 6
     seq_len = 1024
     num_samples = len(class_defs) * len(snrs) * repeats
 
@@ -103,12 +88,12 @@ def _build_stft_h5(path: Path) -> Path:
     idx = 0
     for label, (_, freq_scale) in enumerate(class_defs):
         for snr in snrs:
-            amp = 0.8 + 0.2 * label
-            noise_std = { -20.0: 0.9, -10.0: 0.5, 0.0: 0.2, 10.0: 0.05 }[snr]
+            amp = 0.5 + (snr + 20.0) / 20.0
+            noise_std = max(0.03, 0.30 - (snr + 20.0) / 120.0)
             for repeat in range(repeats):
                 t = np.linspace(0.0, 1.0, seq_len, dtype=np.float32)
-                phase = repeat * 0.3
-                rng = np.random.default_rng(7000 + idx)
+                phase = repeat * 0.2
+                rng = np.random.default_rng(9000 + idx)
                 x[idx, :, 0] = amp * np.sin(2.0 * np.pi * freq_scale * t + phase) + rng.normal(0.0, noise_std, size=seq_len)
                 x[idx, :, 1] = amp * np.cos(2.0 * np.pi * freq_scale * t + phase) + rng.normal(0.0, noise_std, size=seq_len)
                 y[idx, label] = 1.0

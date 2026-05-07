@@ -176,6 +176,12 @@ python scripts/train.py \
   --split outputs/splits/radioml2018_seed42.npz \
   --out outputs/runs/stft_cnn_seed42
 
+python scripts/train.py \
+  --config configs/sensing_cnn.yaml \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --out outputs/runs/sensing_cnn_seed42
+
 python scripts/evaluate.py \
   --config configs/cnn1d.yaml \
   --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
@@ -194,6 +200,12 @@ python scripts/evaluate.py \
   --split outputs/splits/radioml2018_seed42.npz \
   --ckpt outputs/runs/stft_cnn_seed42/best.pt
 
+python scripts/evaluate.py \
+  --config configs/sensing_cnn.yaml \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --ckpt outputs/runs/sensing_cnn_seed42/best.pt
+
 python scripts/plot_spectrograms.py \
   --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
   --out outputs/figures/stft_spectrogram_examples.png \
@@ -209,6 +221,14 @@ python scripts/compare_results.py \
   --resnet-run-dir outputs/runs/resnet1d_seed42 \
   --stft-run-dir outputs/runs/stft_cnn_seed42 \
   --out-dir outputs/comparisons
+
+python scripts/run_sensing.py \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --method cnn \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --config configs/sensing_cnn.yaml \
+  --ckpt outputs/runs/sensing_cnn_seed42/best.pt \
+  --eval-out-dir outputs/runs/sensing_cnn_seed42
 ```
 
 ## Reproducibility Roadmap
@@ -220,7 +240,8 @@ python scripts/compare_results.py \
 5. Phase 4: CNN1D training pipeline and evaluation
 6. Phase 5: ResNet1D / MRResNet experiments
 7. Phase 6: STFT spectrogram transform and STFT-CNN experiments
-8. Phase 7: multi-task AMC plus spectrum sensing model
+8. Phase 7: deep spectrum sensing with binary CNN detector
+9. Phase 8: multi-task AMC plus spectrum sensing model
 
 ## Initial CNN1D Notes
 
@@ -240,9 +261,18 @@ nvidia-smi --query-gpu=name,memory.total,memory.used,temperature.gpu,power.draw 
 - The default [configs/stft_cnn.yaml](/home/developer716/workspace/rfml-amc-spectrum-sensing/configs/stft_cnn.yaml) uses `n_fft=128`, `hop_length=32`, `window=hann`, and `output=log_power`.
 - On real RadioML data, use the same split file as the 1D models so `cnn1d`, `resnet1d`, and `stft_cnn` can be compared fairly by SNR.
 
+## Spectrum Sensing Notes
+
+- `[src/rfml/data/spectrum_sensing.py](/home/developer716/workspace/rfml-amc-spectrum-sensing/src/rfml/data/spectrum_sensing.py)` builds a binary detection dataset from RadioML signal samples and lazily generated AWGN noise-only samples.
+- Positive samples are labeled `1` and negative noise-only samples are labeled `0`.
+- `[configs/sensing_cnn.yaml](/home/developer716/workspace/rfml-amc-spectrum-sensing/configs/sensing_cnn.yaml)` reuses the 1D CNN backbone with `num_classes=2`.
+- The evaluation pipeline writes `sensing_metrics.csv`, `sensing_roc_curve.csv`, `pd_vs_snr.csv`, `sensing_roc.png`, and `pd_vs_snr.png`.
+- Reported sensing metrics include `Accuracy`, `ROC-AUC`, `Pd@Pfa=0.10`, `Pd@Pfa=0.05`, and `Pd vs SNR`.
+
 ## Current Results Snapshot
 
 - Phase 4 code path supports AMP, checkpoint, resume, CSV log, TensorBoard, overall accuracy, accuracy vs SNR, and confusion matrix outputs.
 - Phase 5 adds ResNet1D-small and ResNet1D-medium with the same trainer/evaluate pipeline plus comparison-table tooling.
 - Phase 6 adds spectrogram plotting, STFT preprocessing, and STFT-CNN training/evaluation support with the same checkpoint and reporting flow.
+- Phase 7 adds deep spectrum sensing with a binary CNN detector, AWGN negative-sample synthesis, and ROC/Pd/Pfa reporting.
 - Real RadioML training/evaluation artifacts still depend on placing `GOLD_XYZ_OSC.0001_1024.hdf5` under `data/`.

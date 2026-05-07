@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Run baseline spectrum sensing experiments."""
+"""Run spectrum sensing experiments."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -11,6 +12,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import yaml
 
 from _bootstrap import delegate_to_conda_if_needed, delegated_env_name
 
@@ -28,9 +30,12 @@ from rfml.baselines.energy_detection import run_energy_detection_from_split
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--h5", required=True, help="Path to GOLD_XYZ_OSC.0001_1024.hdf5")
-    parser.add_argument("--method", default="energy", choices=["energy"])
+    parser.add_argument("--method", default="energy", choices=["energy", "cnn"])
     parser.add_argument("--split", required=True, help="Path to saved split npz")
     parser.add_argument("--split-name", default="test", choices=["train", "val", "test"])
+    parser.add_argument("--config", default=None, help="Required for --method cnn")
+    parser.add_argument("--ckpt", default=None, help="Required for --method cnn")
+    parser.add_argument("--eval-out-dir", default="outputs/runs/sensing_eval")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--snr-filter", type=float, nargs="*", default=None)
     parser.add_argument("--seed", type=int, default=42)
@@ -84,6 +89,49 @@ def main() -> int:
     figures_dir = Path(args.figures_dir).expanduser().resolve()
     metrics_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.method == "cnn":
+        if args.config is None or args.ckpt is None:
+            print("error: --config and --ckpt are required when --method cnn")
+            return 1
+
+        from evaluate import main as evaluate_main
+
+        eval_out_dir = Path(args.eval_out_dir).expanduser().resolve()
+        original_argv = sys.argv[:]
+        try:
+            sys.argv = [
+                "evaluate.py",
+                "--config",
+                str(Path(args.config).expanduser().resolve()),
+                "--h5",
+                str(h5_path),
+                "--split",
+                str(split_path),
+                "--ckpt",
+                str(Path(args.ckpt).expanduser().resolve()),
+                "--split-name",
+                args.split_name,
+                "--out-dir",
+                str(eval_out_dir),
+            ]
+            rc = evaluate_main()
+        finally:
+            sys.argv = original_argv
+        if rc != 0:
+            return rc
+
+        summary = json.loads((eval_out_dir / "summary.json").read_text(encoding="utf-8"))
+        print(f"delegated_conda_env: {delegated_env_name() or '<none>'}")
+        print(f"h5_path: {h5_path}")
+        print(f"split_path: {split_path}")
+        print(f"roc_auc: {float(summary['roc_auc']):.6f}")
+        print(f"pd_at_pfa_0p10: {float(summary['pd_at_pfa_0p10']):.6f}")
+        print(f"pd_at_pfa_0p05: {float(summary['pd_at_pfa_0p05']):.6f}")
+        print(f"metrics_csv: {eval_out_dir / 'sensing_metrics.csv'}")
+        print(f"figure_roc: {eval_out_dir / 'sensing_roc.png'}")
+        print(f"figure_pd_vs_snr: {eval_out_dir / 'pd_vs_snr.png'}")
+        return 0
 
     result = run_energy_detection_from_split(
         h5_path,
