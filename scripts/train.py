@@ -42,6 +42,8 @@ def load_config(path: str | Path) -> TrainerConfig:
         task=str(task_cfg.get("name", "amc")),
         model_name=model_cfg["name"],
         num_classes=int(model_cfg["num_classes"]),
+        modulation_num_classes=int(model_cfg["modulation_num_classes"]) if model_cfg.get("modulation_num_classes") is not None else None,
+        sensing_num_classes=int(model_cfg["sensing_num_classes"]) if model_cfg.get("sensing_num_classes") is not None else None,
         epochs=int(train_cfg["epochs"]),
         batch_size=int(train_cfg["batch_size"]),
         lr=float(train_cfg["lr"]),
@@ -67,6 +69,7 @@ def load_config(path: str | Path) -> TrainerConfig:
         sensing_positive_ratio=task_cfg.get("positive_ratio"),
         sensing_noise_power=task_cfg.get("noise_power"),
         sensing_seed=int(task_cfg.get("seed", 42)),
+        lambda_sensing=float(task_cfg.get("lambda_sensing", 1.0)),
     )
 
 

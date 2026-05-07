@@ -182,6 +182,12 @@ python scripts/train.py \
   --split outputs/splits/radioml2018_seed42.npz \
   --out outputs/runs/sensing_cnn_seed42
 
+python scripts/train.py \
+  --config configs/multitask.yaml \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --out outputs/runs/multitask_seed42
+
 python scripts/evaluate.py \
   --config configs/cnn1d.yaml \
   --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
@@ -205,6 +211,12 @@ python scripts/evaluate.py \
   --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
   --split outputs/splits/radioml2018_seed42.npz \
   --ckpt outputs/runs/sensing_cnn_seed42/best.pt
+
+python scripts/evaluate.py \
+  --config configs/multitask.yaml \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --ckpt outputs/runs/multitask_seed42/best.pt
 
 python scripts/plot_spectrograms.py \
   --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
@@ -269,10 +281,19 @@ nvidia-smi --query-gpu=name,memory.total,memory.used,temperature.gpu,power.draw 
 - The evaluation pipeline writes `sensing_metrics.csv`, `sensing_roc_curve.csv`, `pd_vs_snr.csv`, `sensing_roc.png`, and `pd_vs_snr.png`.
 - Reported sensing metrics include `Accuracy`, `ROC-AUC`, `Pd@Pfa=0.10`, `Pd@Pfa=0.05`, and `Pd vs SNR`.
 
+## Multi-Task Notes
+
+- `[src/rfml/data/multitask.py](/home/developer716/workspace/rfml-amc-spectrum-sensing/src/rfml/data/multitask.py)` mixes RadioML signal samples with synthetic AWGN noise-only samples in one dataset.
+- `[src/rfml/models/multitask.py](/home/developer716/workspace/rfml-amc-spectrum-sensing/src/rfml/models/multitask.py)` implements a shared encoder with two heads: `modulation_logits` and `sensing_logits`.
+- Noise-only samples participate in sensing supervision only; their modulation loss is masked out during training.
+- `[configs/multitask.yaml](/home/developer716/workspace/rfml-amc-spectrum-sensing/configs/multitask.yaml)` uses `loss = loss_modulation + lambda_sensing * loss_sensing`.
+- Multi-task evaluation writes modulation `accuracy_vs_snr` plus sensing `ROC / AUC / Pd@Pfa / Pd vs SNR` artifacts in the same run directory.
+
 ## Current Results Snapshot
 
 - Phase 4 code path supports AMP, checkpoint, resume, CSV log, TensorBoard, overall accuracy, accuracy vs SNR, and confusion matrix outputs.
 - Phase 5 adds ResNet1D-small and ResNet1D-medium with the same trainer/evaluate pipeline plus comparison-table tooling.
 - Phase 6 adds spectrogram plotting, STFT preprocessing, and STFT-CNN training/evaluation support with the same checkpoint and reporting flow.
 - Phase 7 adds deep spectrum sensing with a binary CNN detector, AWGN negative-sample synthesis, and ROC/Pd/Pfa reporting.
+- Phase 8 adds a shared-encoder multi-task model for AMC plus spectrum sensing.
 - Real RadioML training/evaluation artifacts still depend on placing `GOLD_XYZ_OSC.0001_1024.hdf5` under `data/`.

@@ -17,13 +17,15 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from rfml.data.radioml2018 import RadioML2018Dataset
+from rfml.data.multitask import MultiTaskRadioMLDataset
 from rfml.data.spectrum_sensing import SpectrumSensingDataset
 from rfml.data.splits import SplitBundle, load_split_bundle, resolve_split_indices
 from rfml.data.transforms import STFTTransform
 from rfml.models.cnn1d import CNN1D
+from rfml.models.multitask import MultiTaskRFModel
 from rfml.models.resnet1d import build_resnet1d
 from rfml.models.stft_cnn import STFTCNN
-from rfml.training.losses import build_classification_loss
+from rfml.training.losses import build_classification_loss, compute_multitask_loss
 from rfml.training.metrics import compute_accuracy
 
 
@@ -49,6 +51,8 @@ class TrainerConfig:
     kernel_sizes: tuple[int, int, int]
     save_every: int
     scan_chunk_size: int
+    modulation_num_classes: int | None = None
+    sensing_num_classes: int | None = None
     stft_n_fft: int | None = None
     stft_hop_length: int | None = None
     stft_window: str | None = None
@@ -57,6 +61,7 @@ class TrainerConfig:
     sensing_positive_ratio: float | None = None
     sensing_noise_power: float | None = None
     sensing_seed: int = 42
+    lambda_sensing: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -66,6 +71,7 @@ class EvaluationOutputs:
     labels: np.ndarray
     preds: np.ndarray
     snrs: np.ndarray
+    extra: dict[str, Any] | None = None
 
 
 class RFMLTrainer:
@@ -154,6 +160,9 @@ class RFMLTrainer:
         }
 
     def evaluate_loader(self, loader: DataLoader) -> EvaluationOutputs:
+        if self.config.task == "multitask":
+            return self._evaluate_multitask_loader(loader)
+
         self.model.eval()
         losses: list[float] = []
         logits_list: list[torch.Tensor] = []
@@ -190,6 +199,9 @@ class RFMLTrainer:
         )
 
     def _run_epoch(self, epoch: int, *, training: bool) -> tuple[float, float]:
+        if self.config.task == "multitask":
+            return self._run_multitask_epoch(epoch, training=training)
+
         loader = self.train_loader if training else self.val_loader
         self.model.train(training)
         losses: list[float] = []
@@ -228,7 +240,75 @@ class RFMLTrainer:
         y_true = torch.cat(labels_list, dim=0).numpy()
         return float(np.mean(losses)), compute_accuracy(y_true, y_pred)
 
+    def _run_multitask_epoch(self, epoch: int, *, training: bool) -> tuple[float, float]:
+        loader = self.train_loader if training else self.val_loader
+        self.model.train(training)
+        losses: list[float] = []
+        mod_preds_list: list[torch.Tensor] = []
+        mod_labels_list: list[torch.Tensor] = []
+        mod_masks_list: list[torch.Tensor] = []
+
+        progress = tqdm(loader, desc=f"epoch {epoch + 1}/{self.config.epochs}", leave=False)
+        for batch in progress:
+            x = batch["iq"].to(self.device, non_blocking=self.config.pin_memory)
+            mod_y = batch["modulation_label"].to(self.device, non_blocking=self.config.pin_memory)
+            sense_y = batch["sensing_label"].to(self.device, non_blocking=self.config.pin_memory)
+            mod_mask = batch["mod_mask"].to(self.device, non_blocking=self.config.pin_memory)
+
+            if training:
+                self.optimizer.zero_grad(set_to_none=True)
+
+            with torch.autocast(
+                device_type=self.device.type,
+                enabled=self.config.amp and self.device.type == "cuda",
+            ):
+                outputs = self.model(x)
+                loss_output = compute_multitask_loss(
+                    outputs["modulation_logits"],
+                    mod_y,
+                    mod_mask,
+                    outputs["sensing_logits"],
+                    sense_y,
+                    lambda_sensing=self.config.lambda_sensing,
+                )
+                loss = loss_output.total_loss
+
+            if training:
+                self.scaler.scale(loss).backward()
+                if self.config.grad_clip is not None:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+
+            losses.append(float(loss.item()))
+            mod_preds_list.append(torch.argmax(outputs["modulation_logits"].detach(), dim=1).cpu())
+            mod_labels_list.append(mod_y.detach().cpu())
+            mod_masks_list.append(mod_mask.detach().cpu())
+            progress.set_postfix(loss=f"{np.mean(losses):.4f}")
+
+        mod_preds = torch.cat(mod_preds_list, dim=0).numpy()
+        mod_labels = torch.cat(mod_labels_list, dim=0).numpy()
+        mod_masks = torch.cat(mod_masks_list, dim=0).numpy() > 0.5
+        if np.any(mod_masks):
+            mod_acc = compute_accuracy(mod_labels[mod_masks], mod_preds[mod_masks])
+        else:
+            mod_acc = float("nan")
+        return float(np.mean(losses)), mod_acc
+
     def _build_model(self) -> nn.Module:
+        if self.config.task == "multitask":
+            modulation_num_classes = int(self.config.modulation_num_classes or self.config.num_classes)
+            sensing_num_classes = int(self.config.sensing_num_classes or 2)
+            return MultiTaskRFModel(
+                backbone=self.config.model_name,
+                modulation_num_classes=modulation_num_classes,
+                sensing_num_classes=sensing_num_classes,
+                channels=self.config.channels,
+                kernel_sizes=self.config.kernel_sizes,
+                classifier_hidden_dim=self.config.classifier_hidden_dim,
+                dropout=self.config.dropout,
+            )
         if self.config.model_name == "cnn1d":
             return CNN1D(
                 num_classes=self.config.num_classes,
@@ -274,7 +354,18 @@ class RFMLTrainer:
                 backend=str(self.config.stft_backend or "torch"),
             )
         split_indices = resolve_split_indices(self.split_bundle, split_name)
-        if self.config.task == "spectrum_sensing":
+        if self.config.task == "multitask":
+            dataset = MultiTaskRadioMLDataset(
+                self.h5_path,
+                split_indices=split_indices,
+                class_names=self.split_bundle.class_names,
+                scan_chunk_size=self.config.scan_chunk_size,
+                transform=transform,
+                positive_ratio=float(self.config.sensing_positive_ratio or 0.5),
+                noise_power=self.config.sensing_noise_power,
+                seed=self.config.sensing_seed,
+            )
+        elif self.config.task == "spectrum_sensing":
             dataset = SpectrumSensingDataset(
                 self.h5_path,
                 split_indices=split_indices,
@@ -300,6 +391,74 @@ class RFMLTrainer:
             num_workers=self.config.num_workers,
             pin_memory=self.config.pin_memory,
             drop_last=False,
+        )
+
+    def _evaluate_multitask_loader(self, loader: DataLoader) -> EvaluationOutputs:
+        self.model.eval()
+        losses: list[float] = []
+        mod_logits_list: list[torch.Tensor] = []
+        mod_labels_list: list[torch.Tensor] = []
+        mod_masks_list: list[torch.Tensor] = []
+        sensing_logits_list: list[torch.Tensor] = []
+        sensing_labels_list: list[torch.Tensor] = []
+        snrs_list: list[torch.Tensor] = []
+
+        with torch.no_grad():
+            for batch in loader:
+                x = batch["iq"].to(self.device, non_blocking=self.config.pin_memory)
+                mod_y = batch["modulation_label"].to(self.device, non_blocking=self.config.pin_memory)
+                sense_y = batch["sensing_label"].to(self.device, non_blocking=self.config.pin_memory)
+                mod_mask = batch["mod_mask"].to(self.device, non_blocking=self.config.pin_memory)
+                snr = batch["snr"]
+                with torch.autocast(
+                    device_type=self.device.type,
+                    enabled=self.config.amp and self.device.type == "cuda",
+                ):
+                    outputs = self.model(x)
+                    loss_output = compute_multitask_loss(
+                        outputs["modulation_logits"],
+                        mod_y,
+                        mod_mask,
+                        outputs["sensing_logits"],
+                        sense_y,
+                        lambda_sensing=self.config.lambda_sensing,
+                    )
+                losses.append(float(loss_output.total_loss.item()))
+                mod_logits_list.append(outputs["modulation_logits"].detach().cpu())
+                mod_labels_list.append(mod_y.detach().cpu())
+                mod_masks_list.append(mod_mask.detach().cpu())
+                sensing_logits_list.append(outputs["sensing_logits"].detach().cpu())
+                sensing_labels_list.append(sense_y.detach().cpu())
+                snrs_list.append(snr.detach().cpu())
+
+        mod_logits = torch.cat(mod_logits_list, dim=0)
+        mod_labels = torch.cat(mod_labels_list, dim=0).numpy()
+        mod_masks = torch.cat(mod_masks_list, dim=0).numpy() > 0.5
+        sensing_logits = torch.cat(sensing_logits_list, dim=0)
+        sensing_labels = torch.cat(sensing_labels_list, dim=0).numpy()
+        snrs = torch.cat(snrs_list, dim=0).numpy()
+
+        mod_preds = torch.argmax(mod_logits, dim=1).numpy()
+        if np.any(mod_masks):
+            mod_accuracy = compute_accuracy(mod_labels[mod_masks], mod_preds[mod_masks])
+        else:
+            mod_accuracy = float("nan")
+
+        sensing_preds = torch.argmax(sensing_logits, dim=1).numpy()
+        sensing_scores = torch.softmax(sensing_logits, dim=1)[:, 1].numpy()
+
+        return EvaluationOutputs(
+            loss=float(np.mean(losses)) if losses else float("nan"),
+            accuracy=mod_accuracy,
+            labels=mod_labels,
+            preds=mod_preds,
+            snrs=snrs,
+            extra={
+                "modulation_masks": mod_masks,
+                "sensing_labels": sensing_labels,
+                "sensing_preds": sensing_preds,
+                "sensing_scores": sensing_scores,
+            },
         )
 
     def _append_csv_row(self, row: dict[str, float | int]) -> None:
