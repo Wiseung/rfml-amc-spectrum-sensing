@@ -1,17 +1,24 @@
 # RFML AMC Spectrum Sensing
 
-PyTorch project scaffold for automatic modulation classification (AMC) and spectrum sensing on the RadioML 2018.01A dataset.
+PyTorch project for automatic modulation classification (AMC) and spectrum sensing on the RadioML 2018.01A dataset.
 
-This repository is being built in phases. Phases 0 to 6 currently cover:
+The repository is designed for single-GPU training on an RTX 5090 24 GB class device and keeps the large RadioML HDF5 file on disk. Dataset access is lazy by default: samples are read with `h5py` inside `Dataset.__getitem__`, not loaded into RAM up front.
 
-- project structure
-- environment validation
-- lazy-loading RadioML 2018.01A dataset access
-- stratified modulation x SNR split generation
-- traditional baselines for AMC and spectrum sensing
-- 1D CNN training and evaluation
-- ResNet1D training and evaluation
-- STFT spectrogram generation and STFT-CNN training
+## Status
+
+Implemented through Phase 8:
+
+- Phase 0: project scaffold, environment checks, smoke tests
+- Phase 1: lazy RadioML 2018.01A dataset loader with HDF5 worker safety
+- Phase 2: stratified modulation x SNR split generation and dataset figures
+- Phase 3: AMC sklearn baselines and energy detection sensing baseline
+- Phase 4: CNN1D training and evaluation pipeline
+- Phase 5: ResNet1D-small / ResNet1D-medium
+- Phase 6: STFT transform, spectrogram plotting, STFT-CNN
+- Phase 7: deep spectrum sensing with AWGN negative samples
+- Phase 8: multi-task AMC plus spectrum sensing model
+
+Current code paths are fully smoke-tested on tiny synthetic datasets. Real experiment metrics still require placing `GOLD_XYZ_OSC.0001_1024.hdf5` under `data/`.
 
 ## Project Layout
 
@@ -24,73 +31,39 @@ rfml-amc-spectrum-sensing/
 ├── configs/
 │   ├── cnn1d.yaml
 │   ├── resnet1d.yaml
+│   ├── sensing_cnn.yaml
 │   ├── stft_cnn.yaml
 │   └── multitask.yaml
 ├── data/
-│   └── .gitkeep
-├── src/
-│   └── rfml/
-│       ├── __init__.py
-│       ├── data/
-│       │   ├── __init__.py
-│       │   ├── radioml2018.py
-│       │   ├── splits.py
-│       │   └── transforms.py
-│       ├── models/
-│       │   ├── __init__.py
-│       │   ├── cnn1d.py
-│       │   ├── resnet1d.py
-│       │   ├── stft_cnn.py
-│       │   └── multitask.py
-│       ├── training/
-│       │   ├── __init__.py
-│       │   ├── trainer.py
-│       │   ├── losses.py
-│       │   └── metrics.py
-│       ├── eval/
-│       │   ├── __init__.py
-│       │   ├── evaluate.py
-│       │   ├── plot_snr.py
-│       │   ├── plot_confusion.py
-│       │   └── sensing_metrics.py
-│       └── baselines/
-│           ├── __init__.py
-│           ├── energy_detection.py
-│           ├── cumulants.py
-│           └── sklearn_baselines.py
+├── src/rfml/
+│   ├── baselines/
+│   ├── data/
+│   ├── eval/
+│   ├── models/
+│   └── training/
 ├── scripts/
-│   ├── check_env.py
-│   ├── inspect_dataset.py
-│   ├── make_splits.py
-│   ├── train.py
-│   ├── evaluate.py
-│   ├── run_sensing.py
-│   └── smoke_test.py
 ├── notebooks/
-│   └── 00_dataset_preview.ipynb
 ├── outputs/
-│   └── .gitkeep
 └── reports/
-    └── experiment_report.md
 ```
 
 ## Environment
 
 Recommended:
 
-- Python 3.10 to 3.12
-- NVIDIA GPU with CUDA support
-- single-GPU training on RTX 5090 24 GB
+- Python `3.10` to `3.12`
+- CUDA-capable PyTorch build
+- single GPU training
 
-Important on this machine:
+Machine-specific note for this workstation:
 
-- shell `python3` currently points to Anaconda Python 3.13
-- `/usr/bin/python3` is system Python 3.12
-- Phase 0 scripts support both, but PyTorch wheels may be easier to manage in a dedicated virtual environment or Conda env using Python 3.10 to 3.12
+- shell `python3` may point to Anaconda Python
+- `/usr/bin/python3` is the safer system interpreter
+- project scripts use [`scripts/_bootstrap.py`](scripts/_bootstrap.py) to delegate to a known Conda env if `torch` is missing in the current interpreter
 
-## Install
+## Installation
 
-Using `venv` with system Python:
+Using `venv`:
 
 ```bash
 /usr/bin/python3 -m venv .venv
@@ -100,7 +73,7 @@ python -m pip install -r requirements.txt
 python -m pip install -e .
 ```
 
-If you want a CUDA-enabled PyTorch build, install the correct wheel for your environment first, then install the rest:
+If you want a specific CUDA wheel, install the matching `torch` build first, then install the rest:
 
 ```bash
 python -m pip install torch torchvision torchaudio
@@ -108,116 +81,181 @@ python -m pip install -r requirements.txt
 python -m pip install -e .
 ```
 
-## Phase 0 Validation
+## Dataset
 
-Check environment:
-
-```bash
-python scripts/check_env.py
-```
-
-Run smoke test:
-
-```bash
-python scripts/smoke_test.py
-```
-
-Both scripts are designed to fail clearly if `torch` is missing or CUDA is unavailable, while still printing actionable diagnostics.
-
-## Dataset Path
-
-Expected target dataset:
+Expected dataset path:
 
 ```text
 data/GOLD_XYZ_OSC.0001_1024.hdf5
 ```
 
-Current code expects:
+The dataset loader in [src/rfml/data/radioml2018.py](/home/developer716/workspace/rfml-amc-spectrum-sensing/src/rfml/data/radioml2018.py) supports:
 
-- lazy HDF5 access to `X`, `Y`, and `Z` with `h5py`
-- SNR/modulation filters and split-index driven sampling
-- train/val/test split generation under `outputs/splits`
-- AMC and spectrum sensing experiment pipelines
+- lazy HDF5 access to `X`, `Y`, `Z`
+- `X: (1024, 2) -> Tensor(2, 1024)`
+- one-hot `Y -> int` label
+- `Z -> snr`
+- `snr_filter`, `class_filter`, `max_samples`, `split_indices`
+- multi-worker safe HDF5 reopening
 
-## Planned Commands
+Returned sample format:
 
-Current commands:
+```python
+{
+    "iq": Tensor[2, 1024],
+    "label": LongTensor[],
+    "snr": FloatTensor[],
+    "index": int,
+}
+```
+
+## Phase 0 Validation
+
+Check the runtime:
+
+```bash
+python scripts/check_env.py
+```
+
+Run the import and random-forward smoke test:
+
+```bash
+python scripts/smoke_test.py
+```
+
+## Data Inspection And Splits
+
+Inspect dataset metadata and draw random IQ waveforms:
 
 ```bash
 python scripts/inspect_dataset.py \
   --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
   --max-samples 4096
+```
 
+Create the stratified `train/val/test = 70/15/15` split:
+
+```bash
 python scripts/make_splits.py \
   --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
   --out outputs/splits/radioml2018_seed42.npz \
   --seed 42
+```
 
+Expected outputs:
+
+- `outputs/splits/radioml2018_seed42.npz`
+- `outputs/figures/iq_examples.png`
+- `outputs/figures/snr_distribution.png`
+- `outputs/figures/class_distribution.png`
+
+## Traditional Baselines
+
+### AMC sklearn baseline
+
+The statistical-feature baseline is implemented in [src/rfml/baselines/sklearn_baselines.py](/home/developer716/workspace/rfml-amc-spectrum-sensing/src/rfml/baselines/sklearn_baselines.py). It extracts light-weight features from IQ sequences and supports `logreg`, `svm`, `rf`, and `gb`.
+
+Example command:
+
+```bash
+python - <<'PY'
+from pathlib import Path
+import json
+
+from rfml.baselines.sklearn_baselines import run_sklearn_baseline
+
+result = run_sklearn_baseline(
+    h5_path="data/GOLD_XYZ_OSC.0001_1024.hdf5",
+    split_path="outputs/splits/radioml2018_seed42.npz",
+    classifier_name="svm",
+    max_train_samples=20000,
+    max_eval_samples=5000,
+    random_state=42,
+)
+
+out_dir = Path("outputs/baselines")
+out_dir.mkdir(parents=True, exist_ok=True)
+result.accuracy_vs_snr.to_csv(out_dir / "svm_accuracy_vs_snr.csv", index=False)
+(out_dir / "svm_classification_report.txt").write_text(result.classification_report_text, encoding="utf-8")
+(out_dir / "svm_summary.json").write_text(
+    json.dumps(
+        {
+            "classifier": result.classifier_name,
+            "train_accuracy": result.train_accuracy,
+            "eval_accuracy": result.eval_accuracy,
+            "feature_dim": result.feature_dim,
+            "train_size": result.train_size,
+            "eval_size": result.eval_size,
+        },
+        indent=2,
+    ),
+    encoding="utf-8",
+)
+print("baseline_eval_accuracy:", result.eval_accuracy)
+print("baseline_accuracy_vs_snr:", out_dir / "svm_accuracy_vs_snr.csv")
+PY
+```
+
+### Energy detection sensing baseline
+
+```bash
 python scripts/run_sensing.py \
   --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
   --method energy \
   --split outputs/splits/radioml2018_seed42.npz
+```
 
+Expected outputs:
+
+- `outputs/metrics/energy_detection.csv`
+- `outputs/figures/energy_roc.png`
+- `outputs/figures/pd_pfa_vs_snr.png`
+
+## Deep AMC Training
+
+### CNN1D
+
+```bash
 python scripts/train.py \
   --config configs/cnn1d.yaml \
   --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
   --split outputs/splits/radioml2018_seed42.npz \
   --out outputs/runs/cnn1d_seed42
+```
 
-python scripts/train.py \
-  --config configs/resnet1d.yaml \
-  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
-  --split outputs/splits/radioml2018_seed42.npz \
-  --out outputs/runs/resnet1d_seed42
+Evaluate:
 
-python scripts/train.py \
-  --config configs/stft_cnn.yaml \
-  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
-  --split outputs/splits/radioml2018_seed42.npz \
-  --out outputs/runs/stft_cnn_seed42
-
-python scripts/train.py \
-  --config configs/sensing_cnn.yaml \
-  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
-  --split outputs/splits/radioml2018_seed42.npz \
-  --out outputs/runs/sensing_cnn_seed42
-
-python scripts/train.py \
-  --config configs/multitask.yaml \
-  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
-  --split outputs/splits/radioml2018_seed42.npz \
-  --out outputs/runs/multitask_seed42
-
+```bash
 python scripts/evaluate.py \
   --config configs/cnn1d.yaml \
   --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
   --split outputs/splits/radioml2018_seed42.npz \
   --ckpt outputs/runs/cnn1d_seed42/best.pt
+```
 
+### ResNet1D
+
+```bash
+python scripts/train.py \
+  --config configs/resnet1d.yaml \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --out outputs/runs/resnet1d_seed42
+```
+
+```bash
 python scripts/evaluate.py \
   --config configs/resnet1d.yaml \
   --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
   --split outputs/splits/radioml2018_seed42.npz \
   --ckpt outputs/runs/resnet1d_seed42/best.pt
+```
 
-python scripts/evaluate.py \
-  --config configs/stft_cnn.yaml \
-  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
-  --split outputs/splits/radioml2018_seed42.npz \
-  --ckpt outputs/runs/stft_cnn_seed42/best.pt
+### STFT-CNN
 
-python scripts/evaluate.py \
-  --config configs/sensing_cnn.yaml \
-  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
-  --split outputs/splits/radioml2018_seed42.npz \
-  --ckpt outputs/runs/sensing_cnn_seed42/best.pt
+Plot representative spectrograms:
 
-python scripts/evaluate.py \
-  --config configs/multitask.yaml \
-  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
-  --split outputs/splits/radioml2018_seed42.npz \
-  --ckpt outputs/runs/multitask_seed42/best.pt
-
+```bash
 python scripts/plot_spectrograms.py \
   --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
   --out outputs/figures/stft_spectrogram_examples.png \
@@ -225,15 +263,53 @@ python scripts/plot_spectrograms.py \
   --snr 10 \
   --n-fft 128 \
   --hop-length 32
+```
 
-python scripts/compare_results.py \
-  --baseline-acc-vs-snr outputs/baselines/svm_accuracy_vs_snr.csv \
-  --baseline-overall-acc 0.70 \
-  --cnn-run-dir outputs/runs/cnn1d_seed42 \
-  --resnet-run-dir outputs/runs/resnet1d_seed42 \
-  --stft-run-dir outputs/runs/stft_cnn_seed42 \
-  --out-dir outputs/comparisons
+Train:
 
+```bash
+python scripts/train.py \
+  --config configs/stft_cnn.yaml \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --out outputs/runs/stft_cnn_seed42
+```
+
+Evaluate:
+
+```bash
+python scripts/evaluate.py \
+  --config configs/stft_cnn.yaml \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --ckpt outputs/runs/stft_cnn_seed42/best.pt
+```
+
+## Deep Spectrum Sensing
+
+Train the binary CNN detector:
+
+```bash
+python scripts/train.py \
+  --config configs/sensing_cnn.yaml \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --out outputs/runs/sensing_cnn_seed42
+```
+
+Evaluate:
+
+```bash
+python scripts/evaluate.py \
+  --config configs/sensing_cnn.yaml \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --ckpt outputs/runs/sensing_cnn_seed42/best.pt
+```
+
+Or use the sensing wrapper:
+
+```bash
 python scripts/run_sensing.py \
   --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
   --method cnn \
@@ -243,57 +319,113 @@ python scripts/run_sensing.py \
   --eval-out-dir outputs/runs/sensing_cnn_seed42
 ```
 
-## Reproducibility Roadmap
+## Multi-Task AMC Plus Sensing
 
-1. Phase 0: scaffold, environment checks, smoke tests
-2. Phase 1: RadioML lazy-loading dataset and split tooling
-3. Phase 2: stratified splits and dataset visualization
-4. Phase 3: baselines for AMC and spectrum sensing
-5. Phase 4: CNN1D training pipeline and evaluation
-6. Phase 5: ResNet1D / MRResNet experiments
-7. Phase 6: STFT spectrogram transform and STFT-CNN experiments
-8. Phase 7: deep spectrum sensing with binary CNN detector
-9. Phase 8: multi-task AMC plus spectrum sensing model
+Train:
 
-## Initial CNN1D Notes
+```bash
+python scripts/train.py \
+  --config configs/multitask.yaml \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --out outputs/runs/multitask_seed42
+```
 
-- Default training config is [configs/cnn1d.yaml](/home/developer716/workspace/rfml-amc-spectrum-sensing/configs/cnn1d.yaml).
-- The intended starting point for this RTX 5090 24 GB laptop is `batch_size: 512`.
-- If thermals and power headroom allow, try `1024` or `2048`.
-- During long runs, monitor GPU memory, power, and temperature:
+Evaluate:
+
+```bash
+python scripts/evaluate.py \
+  --config configs/multitask.yaml \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --ckpt outputs/runs/multitask_seed42/best.pt
+```
+
+## Comparison
+
+Build compact comparison tables and an `accuracy vs SNR` overlay:
+
+```bash
+python scripts/compare_results.py \
+  --baseline-acc-vs-snr outputs/baselines/svm_accuracy_vs_snr.csv \
+  --baseline-overall-acc 0.70 \
+  --cnn-run-dir outputs/runs/cnn1d_seed42 \
+  --resnet-run-dir outputs/runs/resnet1d_seed42 \
+  --stft-run-dir outputs/runs/stft_cnn_seed42 \
+  --out-dir outputs/comparisons
+```
+
+The `--baseline-overall-acc` value should be replaced with the actual SVM eval accuracy from your baseline summary.
+
+## Training Features
+
+The trainer in [src/rfml/training/trainer.py](/home/developer716/workspace/rfml-amc-spectrum-sensing/src/rfml/training/trainer.py) supports:
+
+- YAML config
+- AMP mixed precision
+- checkpoint save and resume
+- CSV log and TensorBoard log
+- gradient clipping
+- early stopping
+- AMC, sensing, and multi-task training modes
+
+Typical run artifacts:
+
+- `best.pt`
+- `last.pt`
+- `train_log.csv`
+- `history.json`
+- TensorBoard event files
+
+Evaluation artifacts:
+
+- `summary.json`
+- `accuracy_vs_snr.csv` or `modulation_accuracy_vs_snr.csv`
+- `confusion_matrix.csv`
+- `classification_report.txt`
+- `confusion_matrix.png`
+- `acc_vs_snr.png`
+- sensing-specific ROC and Pd/Pfa files when applicable
+
+## Notebook And Report
+
+- Dataset preview notebook: [notebooks/00_dataset_preview.ipynb](/home/developer716/workspace/rfml-amc-spectrum-sensing/notebooks/00_dataset_preview.ipynb)
+- Experiment report template: [reports/experiment_report.md](/home/developer716/workspace/rfml-amc-spectrum-sensing/reports/experiment_report.md)
+
+## Reproducibility Flow
+
+1. Install dependencies and verify the environment.
+2. Place `GOLD_XYZ_OSC.0001_1024.hdf5` under `data/`.
+3. Inspect the dataset with `scripts/inspect_dataset.py`.
+4. Create `outputs/splits/radioml2018_seed42.npz`.
+5. Run sklearn AMC baseline and energy detection baseline.
+6. Train and evaluate `cnn1d`.
+7. Train and evaluate `resnet1d`.
+8. Plot STFT spectrograms, then train and evaluate `stft_cnn`.
+9. Train and evaluate `sensing_cnn`.
+10. Train and evaluate `multitask`.
+11. Run `scripts/compare_results.py`.
+12. Fill the report in `reports/experiment_report.md` with real metrics and figures.
+
+## Smoke-Test Scope
+
+Smoke tests cover:
+
+- import and CUDA detection
+- random tensor forward passes
+- synthetic HDF5 dataset loading
+- split generation
+- baseline execution
+- trainer loop for AMC, sensing, STFT, ResNet1D, and multi-task
+
+Smoke tests do not claim real RadioML leaderboard-quality results. They only confirm that the engineering pipeline runs end to end.
+
+## GPU Notes
+
+The default starting point for this RTX 5090 24 GB laptop is `batch_size: 512` for 1D models. If thermals allow, you can try `1024` or `2048`.
+
+Monitor GPU state during long runs:
 
 ```bash
 nvidia-smi --query-gpu=name,memory.total,memory.used,temperature.gpu,power.draw --format=csv,noheader
 ```
-
-## STFT-CNN Notes
-
-- `STFTTransform` lives in [src/rfml/data/transforms.py](/home/developer716/workspace/rfml-amc-spectrum-sensing/src/rfml/data/transforms.py) and currently supports `torch.stft` or `scipy.signal.stft`.
-- Configurable STFT parameters include `stft_n_fft`, `stft_hop_length`, `stft_window`, `stft_output`, and `stft_backend`.
-- The default [configs/stft_cnn.yaml](/home/developer716/workspace/rfml-amc-spectrum-sensing/configs/stft_cnn.yaml) uses `n_fft=128`, `hop_length=32`, `window=hann`, and `output=log_power`.
-- On real RadioML data, use the same split file as the 1D models so `cnn1d`, `resnet1d`, and `stft_cnn` can be compared fairly by SNR.
-
-## Spectrum Sensing Notes
-
-- `[src/rfml/data/spectrum_sensing.py](/home/developer716/workspace/rfml-amc-spectrum-sensing/src/rfml/data/spectrum_sensing.py)` builds a binary detection dataset from RadioML signal samples and lazily generated AWGN noise-only samples.
-- Positive samples are labeled `1` and negative noise-only samples are labeled `0`.
-- `[configs/sensing_cnn.yaml](/home/developer716/workspace/rfml-amc-spectrum-sensing/configs/sensing_cnn.yaml)` reuses the 1D CNN backbone with `num_classes=2`.
-- The evaluation pipeline writes `sensing_metrics.csv`, `sensing_roc_curve.csv`, `pd_vs_snr.csv`, `sensing_roc.png`, and `pd_vs_snr.png`.
-- Reported sensing metrics include `Accuracy`, `ROC-AUC`, `Pd@Pfa=0.10`, `Pd@Pfa=0.05`, and `Pd vs SNR`.
-
-## Multi-Task Notes
-
-- `[src/rfml/data/multitask.py](/home/developer716/workspace/rfml-amc-spectrum-sensing/src/rfml/data/multitask.py)` mixes RadioML signal samples with synthetic AWGN noise-only samples in one dataset.
-- `[src/rfml/models/multitask.py](/home/developer716/workspace/rfml-amc-spectrum-sensing/src/rfml/models/multitask.py)` implements a shared encoder with two heads: `modulation_logits` and `sensing_logits`.
-- Noise-only samples participate in sensing supervision only; their modulation loss is masked out during training.
-- `[configs/multitask.yaml](/home/developer716/workspace/rfml-amc-spectrum-sensing/configs/multitask.yaml)` uses `loss = loss_modulation + lambda_sensing * loss_sensing`.
-- Multi-task evaluation writes modulation `accuracy_vs_snr` plus sensing `ROC / AUC / Pd@Pfa / Pd vs SNR` artifacts in the same run directory.
-
-## Current Results Snapshot
-
-- Phase 4 code path supports AMP, checkpoint, resume, CSV log, TensorBoard, overall accuracy, accuracy vs SNR, and confusion matrix outputs.
-- Phase 5 adds ResNet1D-small and ResNet1D-medium with the same trainer/evaluate pipeline plus comparison-table tooling.
-- Phase 6 adds spectrogram plotting, STFT preprocessing, and STFT-CNN training/evaluation support with the same checkpoint and reporting flow.
-- Phase 7 adds deep spectrum sensing with a binary CNN detector, AWGN negative-sample synthesis, and ROC/Pd/Pfa reporting.
-- Phase 8 adds a shared-encoder multi-task model for AMC plus spectrum sensing.
-- Real RadioML training/evaluation artifacts still depend on placing `GOLD_XYZ_OSC.0001_1024.hdf5` under `data/`.
