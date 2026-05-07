@@ -26,6 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--baseline-overall-acc", type=float, default=None)
     parser.add_argument("--cnn-run-dir", default=None)
     parser.add_argument("--resnet-run-dir", default=None)
+    parser.add_argument("--stft-run-dir", default=None)
     parser.add_argument("--out-dir", default="outputs/comparisons")
     return parser.parse_args()
 
@@ -66,6 +67,13 @@ def main() -> int:
         resnet_df["model"] = "resnet1d"
         comparison_frames.append(resnet_df)
         _write_metric_csv(out_dir / "resnet1d_metrics.csv", "resnet1d", resnet_acc)
+
+    if args.stft_run_dir:
+        stft_dir = Path(args.stft_run_dir).expanduser().resolve()
+        stft_acc, stft_df = _load_summary(stft_dir)
+        stft_df["model"] = "stft_cnn"
+        comparison_frames.append(stft_df)
+        _write_metric_csv(out_dir / "stft_cnn_metrics.csv", "stft_cnn", stft_acc)
 
     if comparison_frames:
         combined = pd.concat(comparison_frames, ignore_index=True)

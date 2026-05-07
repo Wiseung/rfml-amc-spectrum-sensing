@@ -18,8 +18,10 @@ from tqdm import tqdm
 
 from rfml.data.radioml2018 import RadioML2018Dataset
 from rfml.data.splits import SplitBundle, load_split_bundle, resolve_split_indices
+from rfml.data.transforms import STFTTransform
 from rfml.models.cnn1d import CNN1D
 from rfml.models.resnet1d import build_resnet1d
+from rfml.models.stft_cnn import STFTCNN
 from rfml.training.losses import build_classification_loss
 from rfml.training.metrics import compute_accuracy
 
@@ -45,6 +47,11 @@ class TrainerConfig:
     kernel_sizes: tuple[int, int, int]
     save_every: int
     scan_chunk_size: int
+    stft_n_fft: int | None = None
+    stft_hop_length: int | None = None
+    stft_window: str | None = None
+    stft_output: str | None = None
+    stft_backend: str | None = None
 
 
 @dataclass(frozen=True)
@@ -232,6 +239,13 @@ class RFMLTrainer:
                 dropout=self.config.dropout,
                 classifier_hidden_dim=self.config.classifier_hidden_dim,
             )
+        if self.config.model_name == "stft_cnn":
+            return STFTCNN(
+                num_classes=self.config.num_classes,
+                channels=self.config.channels,
+                dropout=self.config.dropout,
+                classifier_hidden_dim=self.config.classifier_hidden_dim,
+            )
         raise ValueError(f"Unsupported model_name: {self.config.model_name}")
 
     def _build_optimizer(self) -> Optimizer:
@@ -245,11 +259,21 @@ class RFMLTrainer:
         raise ValueError(f"Unsupported optimizer: {self.config.optimizer}")
 
     def _build_loader(self, split_name: str, *, shuffle: bool) -> DataLoader:
+        transform = None
+        if self.config.model_name == "stft_cnn":
+            transform = STFTTransform(
+                n_fft=int(self.config.stft_n_fft or 128),
+                hop_length=int(self.config.stft_hop_length or 32),
+                window=str(self.config.stft_window or "hann"),
+                output=str(self.config.stft_output or "log_power"),
+                backend=str(self.config.stft_backend or "torch"),
+            )
         dataset = RadioML2018Dataset(
             self.h5_path,
             split_indices=resolve_split_indices(self.split_bundle, split_name),
             class_names=self.split_bundle.class_names,
             scan_chunk_size=self.config.scan_chunk_size,
+            transform=transform,
         )
         return DataLoader(
             dataset,

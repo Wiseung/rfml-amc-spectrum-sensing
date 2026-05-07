@@ -2,7 +2,7 @@
 
 PyTorch project scaffold for automatic modulation classification (AMC) and spectrum sensing on the RadioML 2018.01A dataset.
 
-This repository is being built in phases. Phases 0 to 4 currently cover:
+This repository is being built in phases. Phases 0 to 6 currently cover:
 
 - project structure
 - environment validation
@@ -10,6 +10,8 @@ This repository is being built in phases. Phases 0 to 4 currently cover:
 - stratified modulation x SNR split generation
 - traditional baselines for AMC and spectrum sensing
 - 1D CNN training and evaluation
+- ResNet1D training and evaluation
+- STFT spectrogram generation and STFT-CNN training
 
 ## Project Layout
 
@@ -124,18 +126,18 @@ Both scripts are designed to fail clearly if `torch` is missing or CUDA is unava
 
 ## Dataset Path
 
-Planned target dataset:
+Expected target dataset:
 
 ```text
 data/GOLD_XYZ_OSC.0001_1024.hdf5
 ```
 
-Future phases will add:
+Current code expects:
 
-- lazy HDF5 dataset loading with `h5py`
-- SNR/modulation filtering
-- train/val/test split generation
-- AMC and spectrum sensing pipelines
+- lazy HDF5 access to `X`, `Y`, and `Z` with `h5py`
+- SNR/modulation filters and split-index driven sampling
+- train/val/test split generation under `outputs/splits`
+- AMC and spectrum sensing experiment pipelines
 
 ## Planned Commands
 
@@ -168,6 +170,12 @@ python scripts/train.py \
   --split outputs/splits/radioml2018_seed42.npz \
   --out outputs/runs/resnet1d_seed42
 
+python scripts/train.py \
+  --config configs/stft_cnn.yaml \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --out outputs/runs/stft_cnn_seed42
+
 python scripts/evaluate.py \
   --config configs/cnn1d.yaml \
   --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
@@ -180,11 +188,26 @@ python scripts/evaluate.py \
   --split outputs/splits/radioml2018_seed42.npz \
   --ckpt outputs/runs/resnet1d_seed42/best.pt
 
+python scripts/evaluate.py \
+  --config configs/stft_cnn.yaml \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --ckpt outputs/runs/stft_cnn_seed42/best.pt
+
+python scripts/plot_spectrograms.py \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --out outputs/figures/stft_spectrogram_examples.png \
+  --num-classes 8 \
+  --snr 10 \
+  --n-fft 128 \
+  --hop-length 32
+
 python scripts/compare_results.py \
   --baseline-acc-vs-snr outputs/baselines/svm_accuracy_vs_snr.csv \
   --baseline-overall-acc 0.70 \
   --cnn-run-dir outputs/runs/cnn1d_seed42 \
   --resnet-run-dir outputs/runs/resnet1d_seed42 \
+  --stft-run-dir outputs/runs/stft_cnn_seed42 \
   --out-dir outputs/comparisons
 ```
 
@@ -192,10 +215,12 @@ python scripts/compare_results.py \
 
 1. Phase 0: scaffold, environment checks, smoke tests
 2. Phase 1: RadioML lazy-loading dataset and split tooling
-3. Phase 2: baselines for AMC and spectrum sensing
-4. Phase 3: CNN1D training pipeline and evaluation
-5. Phase 4: ResNet1D / MRResNet, STFT-CNN, and broader experiments
-6. Phase 5: multi-task AMC plus spectrum sensing model
+3. Phase 2: stratified splits and dataset visualization
+4. Phase 3: baselines for AMC and spectrum sensing
+5. Phase 4: CNN1D training pipeline and evaluation
+6. Phase 5: ResNet1D / MRResNet experiments
+7. Phase 6: STFT spectrogram transform and STFT-CNN experiments
+8. Phase 7: multi-task AMC plus spectrum sensing model
 
 ## Initial CNN1D Notes
 
@@ -208,8 +233,16 @@ python scripts/compare_results.py \
 nvidia-smi --query-gpu=name,memory.total,memory.used,temperature.gpu,power.draw --format=csv,noheader
 ```
 
+## STFT-CNN Notes
+
+- `STFTTransform` lives in [src/rfml/data/transforms.py](/home/developer716/workspace/rfml-amc-spectrum-sensing/src/rfml/data/transforms.py) and currently supports `torch.stft` or `scipy.signal.stft`.
+- Configurable STFT parameters include `stft_n_fft`, `stft_hop_length`, `stft_window`, `stft_output`, and `stft_backend`.
+- The default [configs/stft_cnn.yaml](/home/developer716/workspace/rfml-amc-spectrum-sensing/configs/stft_cnn.yaml) uses `n_fft=128`, `hop_length=32`, `window=hann`, and `output=log_power`.
+- On real RadioML data, use the same split file as the 1D models so `cnn1d`, `resnet1d`, and `stft_cnn` can be compared fairly by SNR.
+
 ## Current Results Snapshot
 
 - Phase 4 code path supports AMP, checkpoint, resume, CSV log, TensorBoard, overall accuracy, accuracy vs SNR, and confusion matrix outputs.
 - Phase 5 adds ResNet1D-small and ResNet1D-medium with the same trainer/evaluate pipeline plus comparison-table tooling.
+- Phase 6 adds spectrogram plotting, STFT preprocessing, and STFT-CNN training/evaluation support with the same checkpoint and reporting flow.
 - Real RadioML training/evaluation artifacts still depend on placing `GOLD_XYZ_OSC.0001_1024.hdf5` under `data/`.

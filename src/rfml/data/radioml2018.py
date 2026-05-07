@@ -91,6 +91,7 @@ class RadioML2018Dataset(Dataset[dict[str, Any]]):
         class_names: Sequence[str] | None = None,
         label_axis: int = -1,
         scan_chunk_size: int = 8192,
+        transform: Any | None = None,
     ) -> None:
         self.h5_path = Path(h5_path).expanduser().resolve()
         if not self.h5_path.exists():
@@ -102,6 +103,7 @@ class RadioML2018Dataset(Dataset[dict[str, Any]]):
         self._z_ds = None
         self._h5_pid: int | None = None
         self.label_axis = label_axis
+        self.transform = transform
         if scan_chunk_size <= 0:
             raise ValueError("scan_chunk_size must be a positive integer")
         self.scan_chunk_size = int(scan_chunk_size)
@@ -172,8 +174,12 @@ class RadioML2018Dataset(Dataset[dict[str, Any]]):
         z_row = h5f["Z"][real_index]
         snr = float(_flatten_scalar_z(z_row))
 
+        iq_tensor = torch.from_numpy(np.ascontiguousarray(iq))
+        if self.transform is not None:
+            iq_tensor = self.transform(iq_tensor)
+
         return {
-            "iq": torch.from_numpy(np.ascontiguousarray(iq)),
+            "iq": iq_tensor,
             "label": torch.tensor(label, dtype=torch.long),
             "snr": torch.tensor(snr, dtype=torch.float32),
             "index": real_index,

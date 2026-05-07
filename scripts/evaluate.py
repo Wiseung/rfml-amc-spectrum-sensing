@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import torch
 import yaml
+from torch.utils.data import DataLoader
 
 from _bootstrap import delegate_to_conda_if_needed, delegated_env_name
 
@@ -25,8 +26,10 @@ if str(SRC_DIR) not in sys.path:
 
 from rfml.data.radioml2018 import RadioML2018Dataset
 from rfml.data.splits import load_split_bundle, resolve_split_indices
+from rfml.data.transforms import STFTTransform
 from rfml.models.cnn1d import CNN1D
 from rfml.models.resnet1d import build_resnet1d
+from rfml.models.stft_cnn import STFTCNN
 from rfml.training.metrics import (
     compute_accuracy,
     compute_accuracy_vs_snr,
@@ -74,6 +77,11 @@ def load_config(path: str | Path) -> TrainerConfig:
         kernel_sizes=tuple(model_cfg.get("kernel_sizes", [7, 5, 3])),
         save_every=int(train_cfg.get("save_every", 5)),
         scan_chunk_size=int(runtime_cfg.get("scan_chunk_size", 8192)),
+        stft_n_fft=model_cfg.get("stft_n_fft"),
+        stft_hop_length=model_cfg.get("stft_hop_length"),
+        stft_window=model_cfg.get("stft_window"),
+        stft_output=model_cfg.get("stft_output"),
+        stft_backend=model_cfg.get("stft_backend"),
     )
 
 
@@ -95,11 +103,29 @@ def main() -> int:
     config = load_config(args.config)
     split_bundle = load_split_bundle(split_path)
     split_indices = resolve_split_indices(split_bundle, args.split_name)
+    transform = None
+    if config.model_name == "stft_cnn":
+        transform = STFTTransform(
+            n_fft=int(config.stft_n_fft or 128),
+            hop_length=int(config.stft_hop_length or 32),
+            window=str(config.stft_window or "hann"),
+            output=str(config.stft_output or "log_power"),
+            backend=str(config.stft_backend or "torch"),
+        )
     dataset = RadioML2018Dataset(
         h5_path,
         split_indices=split_indices,
         class_names=split_bundle.class_names,
         scan_chunk_size=config.scan_chunk_size,
+        transform=transform,
+    )
+    loader = DataLoader(
+        dataset,
+        batch_size=config.batch_size,
+        shuffle=False,
+        num_workers=config.num_workers,
+        pin_memory=config.pin_memory,
+        drop_last=False,
     )
 
     out_dir = Path(args.out_dir).expanduser().resolve() if args.out_dir else ckpt_path.parent
@@ -120,6 +146,13 @@ def main() -> int:
             dropout=config.dropout,
             classifier_hidden_dim=config.classifier_hidden_dim,
         )
+    elif config.model_name == "stft_cnn":
+        model = STFTCNN(
+            num_classes=config.num_classes,
+            channels=config.channels,
+            dropout=config.dropout,
+            classifier_hidden_dim=config.classifier_hidden_dim,
+        )
     else:
         raise ValueError(f"Unsupported model_name: {config.model_name}")
     payload = torch.load(ckpt_path, map_location="cpu")
@@ -132,14 +165,13 @@ def main() -> int:
     preds = []
     snrs = []
     with torch.no_grad():
-        for idx in range(len(dataset)):
-            sample = dataset[idx]
-            x = sample["iq"].unsqueeze(0).to(device)
+        for batch in loader:
+            x = batch["iq"].to(device, non_blocking=config.pin_memory)
             logits = model(x)
-            pred = int(torch.argmax(logits, dim=1).item())
-            ys.append(int(sample["label"].item()))
-            preds.append(pred)
-            snrs.append(float(sample["snr"].item()))
+            batch_preds = torch.argmax(logits, dim=1).cpu().numpy()
+            ys.extend(batch["label"].cpu().numpy().tolist())
+            preds.extend(batch_preds.tolist())
+            snrs.extend(batch["snr"].cpu().numpy().astype(np.float32).tolist())
 
     y_true = np.asarray(ys, dtype=np.int64)
     y_pred = np.asarray(preds, dtype=np.int64)

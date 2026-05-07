@@ -57,6 +57,11 @@ def load_config(path: str | Path) -> TrainerConfig:
         kernel_sizes=tuple(model_cfg.get("kernel_sizes", [7, 5, 3])),
         save_every=int(train_cfg.get("save_every", 5)),
         scan_chunk_size=int(runtime_cfg.get("scan_chunk_size", 8192)),
+        stft_n_fft=model_cfg.get("stft_n_fft"),
+        stft_hop_length=model_cfg.get("stft_hop_length"),
+        stft_window=model_cfg.get("stft_window"),
+        stft_output=model_cfg.get("stft_output"),
+        stft_backend=model_cfg.get("stft_backend"),
     )
 
 
