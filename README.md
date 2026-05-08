@@ -36,7 +36,7 @@ Verified headline results from the strongest completed run of each route:
 | --- | --- | ---: |
 | AMC | SVM statistical baseline | `0.3714` |
 | AMC | RandomForest statistical baseline | `0.4152` |
-| AMC | STFT-CNN round-3 | `0.4982` |
+| AMC | STFT-CNN round-4 | `0.5103` |
 | AMC | CNN1D | `0.5232` |
 | AMC | ResNet1D-small | `0.5984` |
 | AMC + Sensing | Multi-task shared encoder round-2 | modulation `0.5699`, sensing AUC `0.9861` |
@@ -47,7 +47,7 @@ Verified headline results from the strongest completed run of each route:
 Current experiment takeaway:
 
 - `ResNet1D` is the strongest AMC model in the current single-GPU budget
-- the current best completed `STFT-CNN` route (`round-3`) is much stronger than the initial spectrogram baseline, but still does not beat time-domain `CNN1D` or `ResNet1D`
+- the current best completed `STFT-CNN` route (`round-4`) is much stronger than the initial spectrogram baseline, but still does not beat time-domain `CNN1D` or `ResNet1D`
 - deep spectrum sensing is dramatically stronger than the energy-detection baseline
 - the tuned multi-task setting restores AMC above single-task `CNN1D` while keeping sensing ROC-AUC above `0.986`, but it still trails the dedicated single-task `ResNet1D-small`
 
@@ -59,10 +59,11 @@ Recent tuning highlights:
   ROC-AUC `0.9861`
 - the tuned run is still below single-task `ResNet1D-small` (`0.5984`), so the current
   shared-encoder setting is a partial recovery rather than a full Pareto improvement
-- deep-backbone STFT round-3 with `n_fft=128, hop=16` and a deeper residual 2D backbone
-  reached test accuracy `0.4982`
-- this is a large improvement over round-1 STFT (`0.3433`) and a further gain over
-  STFT round-2 (`0.4722`), but it still does not beat `CNN1D` (`0.5232`)
+- richer-channel STFT round-4 with `log_power_phase`, `n_fft=128`, `hop=16`, and a
+  deeper residual 2D backbone reached test accuracy `0.5103`
+- this is a large improvement over round-1 STFT (`0.3433`), a gain over
+  STFT round-2 (`0.4722`), and another improvement over STFT round-3 (`0.4982`),
+  but it still does not beat `CNN1D` (`0.5232`)
 
 ## Project Layout
 
@@ -361,25 +362,31 @@ Round-1 AMC artifacts:
 - [outputs/runs/stft_cnn_round1_seed42_eval/summary.json](/home/developer716/workspace/rfml-amc-spectrum-sensing/outputs/runs/stft_cnn_round1_seed42_eval/summary.json)
 - [outputs/comparisons/acc_vs_snr_compare.png](/home/developer716/workspace/rfml-amc-spectrum-sensing/outputs/comparisons/acc_vs_snr_compare.png)
 
-Round-3 STFT result:
+Previous round-3 STFT result:
 
 - config: `configs/stft_cnn_round3_nfft128_hop16_deeper.yaml`
 - test accuracy: `0.4982`
 - low-SNR mean accuracy (`<= 0 dB`): `0.1933`
 - high-SNR mean accuracy (`>= 16 dB`): `0.7446`
 
+Current best round-4 STFT result:
+
+- config: `configs/stft_cnn_round4_nfft128_hop16_deeper_logpower_phase.yaml`
+- test accuracy: `0.5103`
+- low-SNR mean accuracy (`<= 0 dB`): `0.1928`
+- high-SNR mean accuracy (`>= 16 dB`): `0.7659`
+
 Interpretation:
 
-- the deeper residual 2D backbone plus the denser STFT hop improved the spectrogram
-  route over both round-1 and round-2
-- compared with STFT round-2, the round-3 gain came mostly from a higher high-SNR
-  ceiling: low-SNR mean improved only slightly (`0.1909 -> 0.1933`), while high-SNR
-  mean improved more clearly (`0.6939 -> 0.7446`)
+- adding richer spectrogram channels on top of the deeper residual 2D backbone
+  improved the spectrogram route again
+- compared with STFT round-3, the round-4 gain came mostly from a higher high-SNR
+  ceiling: low-SNR mean changed slightly (`0.1933 -> 0.1928`), while high-SNR mean
+  improved more clearly (`0.7446 -> 0.7659`)
 - relative to `CNN1D`, the current STFT model is still lower overall, but the gap is
-  now much smaller than in earlier STFT rounds
-- the next sweep focus should be richer spectrogram channels such as
-  `log_power_phase`, because the current single-channel log-power route still leaves
-  accuracy on the table
+  now down to about `0.013`
+- the next STFT sweep should focus on low-SNR robustness, because richer channels
+  helped the high-SNR ceiling more than the difficult low-SNR regime
 
 ## Deep Spectrum Sensing
 

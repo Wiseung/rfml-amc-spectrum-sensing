@@ -391,6 +391,47 @@ Interpretation:
 - the next STFT sweep should therefore prioritize richer spectrogram channels such
   as `log_power_phase` or `real_imag`, rather than only larger `n_fft`
 
+### 7.7 STFT round-4 richer-channel status
+
+The next completed spectrogram experiment kept the deeper residual 2D backbone and
+the denser hop, but added richer STFT channels through `log_power_phase`:
+
+```text
+configs/stft_cnn_round4_nfft128_hop16_deeper_logpower_phase.yaml
+```
+
+Best validation point:
+
+- epoch `6`
+- validation accuracy: `0.5113`
+
+Final test metrics:
+
+- overall accuracy: `0.5103`
+- low-SNR mean accuracy (`<= 0 dB`): `0.1928`
+- high-SNR mean accuracy (`>= 16 dB`): `0.7659`
+- best SNR bucket: `24 dB`
+- best bucket accuracy: `0.7709`
+
+Comparison against earlier STFT models:
+
+- versus STFT round-3 (`0.4982`), round-4 gains another `0.0121` overall accuracy
+- versus STFT round-3 low-SNR mean (`0.1933`), round-4 is essentially flat at `0.1928`
+- versus STFT round-3 high-SNR mean (`0.7446`), round-4 improves to `0.7659`
+- versus STFT round-2 (`0.4722`), round-4 gains `0.0382` overall accuracy
+- versus `CNN1D` (`0.5232`), the remaining overall gap is only about `0.0129`
+
+Interpretation:
+
+- the richer `log_power_phase` representation did improve the spectrogram route in
+  real test accuracy, so the extra channel information is useful
+- the gain again comes mostly from higher-SNR performance rather than from improved
+  low-SNR robustness
+- spectrogram models are now clearly competitive with `CNN1D`, but still trail both
+  `CNN1D` and `ResNet1D-small` overall
+- the next most evidence-backed direction is to target low-SNR robustness explicitly,
+  rather than only continuing to lift high-SNR ceiling
+
 ## 8. Reproduction Commands
 
 ### 7.1 Environment smoke test
@@ -528,6 +569,25 @@ python scripts/evaluate.py \
   --out-dir outputs/runs/stft_cnn_round3_nfft128_hop16_deeper_eval
 ```
 
+Round-4 richer-channel STFT reproduction command:
+
+```bash
+python scripts/train.py \
+  --config configs/stft_cnn_round4_nfft128_hop16_deeper_logpower_phase.yaml \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --out outputs/runs/stft_cnn_round4_nfft128_hop16_deeper_logpower_phase
+```
+
+```bash
+python scripts/evaluate.py \
+  --config configs/stft_cnn_round4_nfft128_hop16_deeper_logpower_phase.yaml \
+  --h5 data/GOLD_XYZ_OSC.0001_1024.hdf5 \
+  --split outputs/splits/radioml2018_seed42.npz \
+  --ckpt outputs/runs/stft_cnn_round4_nfft128_hop16_deeper_logpower_phase/best.pt \
+  --out-dir outputs/runs/stft_cnn_round4_nfft128_hop16_deeper_logpower_phase_eval
+```
+
 ### 7.8 Deep spectrum sensing
 
 ```bash
@@ -657,6 +717,7 @@ Completed round-1 table:
 | STFT-CNN round-1 | AMC | `0.3433` | initial spectrogram setup underperformed |
 | STFT-CNN round-2 | AMC | `0.4722` | deep 2D backbone greatly improved spectrogram route |
 | STFT-CNN round-3 | AMC | `0.4982` | deeper backbone further improved high-SNR ceiling |
+| STFT-CNN round-4 | AMC | `0.5103` | richer `log_power_phase` channels improved high-SNR ceiling again |
 | Energy Detection | Sensing | ROC-AUC `0.5210` | non-deep baseline |
 | CNN1D detector | Sensing | acc `0.8491`, AUC `0.9834` | binary deep sensing |
 | Multi-task round-1 | AMC + Sensing | AMC `0.4563`, sensing AUC `0.9858` | shared encoder improved sensing, hurt AMC |
@@ -668,9 +729,9 @@ Completed round-1 table:
   saturation level differs strongly by architecture
 - `ResNet1D` consistently outperformed plain `CNN1D`, especially from
   mid-to-high SNR
-- the latest `STFT-CNN` route improved from `0.3433` to `0.4982`; it is now
-  slightly stronger than `CNN1D` at `<= 0 dB`, but still lower overall because
-  the high-SNR ceiling remains below the time-domain models
+- the latest `STFT-CNN` route improved from `0.3433` to `0.5103`; it is now
+  very close to `CNN1D` overall, but the remaining gap is still explained by
+  high-SNR ceiling rather than by low-SNR advantage
 - deep sensing improved massively over energy detection, moving from ROC-AUC
   `0.5210` to `0.9834`
 - the round-2 multi-task tuning result confirms that checkpoint criterion and
@@ -679,6 +740,8 @@ Completed round-1 table:
 - the current best multi-task setup is therefore viable for joint deployment,
   though it still falls short of single-task `ResNet1D-small` AMC accuracy
 - the strengthened STFT experiments confirm that spectrogram models were not a
-  dead end; round-3 closes a meaningful part of the gap to time-domain CNN1D
-- the remaining limitation is no longer only model depth; richer spectrogram
-  channels are the next most evidence-backed direction
+  dead end; round-4 closes the gap to time-domain `CNN1D` even further
+- richer spectrogram channels did help, validating that representation choice
+  matters beyond backbone depth alone
+- the remaining limitation is now concentrated in low-SNR robustness rather than
+  only in overall ceiling
