@@ -23,6 +23,23 @@ def build_classification_loss(name: str = "cross_entropy") -> nn.Module:
     raise ValueError(f"Unsupported loss: {name}")
 
 
+def compute_weighted_cross_entropy(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    sample_weights: torch.Tensor | None = None,
+) -> torch.Tensor:
+    per_sample_loss = F.cross_entropy(logits, targets, reduction="none")
+    if sample_weights is None:
+        return per_sample_loss.mean()
+    weights = sample_weights.to(device=per_sample_loss.device, dtype=per_sample_loss.dtype).view(-1)
+    if weights.numel() != per_sample_loss.numel():
+        raise ValueError(
+            f"sample_weights length {weights.numel()} does not match batch size {per_sample_loss.numel()}"
+        )
+    weight_sum = torch.clamp(weights.sum(), min=1e-8)
+    return (per_sample_loss * weights).sum() / weight_sum
+
+
 def compute_multitask_loss(
     modulation_logits: torch.Tensor,
     modulation_targets: torch.Tensor,

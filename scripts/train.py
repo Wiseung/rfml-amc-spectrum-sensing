@@ -72,6 +72,8 @@ def load_config(path: str | Path) -> TrainerConfig:
         sensing_seed=int(task_cfg.get("seed", 42)),
         lambda_sensing=float(task_cfg.get("lambda_sensing", 1.0)),
         best_metric=str(train_cfg.get("best_metric", "val_loss")),
+        low_snr_threshold=float(train_cfg["low_snr_threshold"]) if train_cfg.get("low_snr_threshold") is not None else None,
+        low_snr_weight=float(train_cfg.get("low_snr_weight", 1.0)),
     )
 
 
@@ -88,13 +90,17 @@ def main() -> int:
         return 1
 
     config = load_config(args.config)
-    trainer = RFMLTrainer(
-        config,
-        h5_path=h5_path,
-        split_path=split_path,
-        out_dir=out_dir,
-        resume_ckpt=args.resume,
-    )
+    try:
+        trainer = RFMLTrainer(
+            config,
+            h5_path=h5_path,
+            split_path=split_path,
+            out_dir=out_dir,
+            resume_ckpt=args.resume,
+        )
+    except ValueError as exc:
+        print(f"error: {exc}")
+        return 1
     result = trainer.fit()
     print(f"delegated_conda_env: {delegated_env_name() or '<none>'}")
     print(f"out_dir: {out_dir}")

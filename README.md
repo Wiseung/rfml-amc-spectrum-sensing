@@ -517,6 +517,7 @@ Typical run artifacts:
 - `last.pt`
 - `train_log.csv`
 - `history.json`
+- `live_status.json`
 - TensorBoard event files
 
 Evaluation artifacts:
@@ -528,6 +529,33 @@ Evaluation artifacts:
 - `confusion_matrix.png`
 - `acc_vs_snr.png`
 - sensing-specific ROC and Pd/Pfa files when applicable
+
+## Live Monitor
+
+For a lightweight real-time dashboard without changing the training loop:
+
+```bash
+python scripts/monitor.py --root outputs/runs --host 127.0.0.1 --port 8765
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8765
+```
+
+The monitor reads existing run artifacts only. It shows:
+
+- GPU temperature, utilization, memory, and power from `nvidia-smi`
+- current training phase and epoch from `live_status.json`
+- loss and accuracy curves from `train_log.csv`
+- best and latest checkpoint timestamps
+- evaluation summary and `accuracy_vs_snr.csv` if present
+
+Important resume rule:
+
+- `training.epochs` is interpreted as the total target epoch count
+- when using `--resume`, set `training.epochs` greater than the checkpoint epoch if you want to continue fine-tuning
 
 ## Notebook And Report
 

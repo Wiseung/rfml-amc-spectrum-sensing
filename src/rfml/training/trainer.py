@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -25,7 +26,7 @@ from rfml.models.cnn1d import CNN1D
 from rfml.models.multitask import MultiTaskRFModel
 from rfml.models.resnet1d import build_resnet1d
 from rfml.models.stft_cnn import STFTCNN
-from rfml.training.losses import build_classification_loss, compute_multitask_loss
+from rfml.training.losses import build_classification_loss, compute_multitask_loss, compute_weighted_cross_entropy
 from rfml.training.metrics import compute_accuracy
 
 
@@ -64,6 +65,8 @@ class TrainerConfig:
     lambda_sensing: float = 1.0
     stft_backbone: str = "basic"
     best_metric: str = "val_loss"
+    low_snr_threshold: float | None = None
+    low_snr_weight: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -96,6 +99,7 @@ class RFMLTrainer:
         self.tb_dir = self.out_dir / "tensorboard"
         self.csv_log_path = self.out_dir / "train_log.csv"
         self.history_json_path = self.out_dir / "history.json"
+        self.live_status_path = self.out_dir / "live_status.json"
         self.last_ckpt_path = self.out_dir / "last.pt"
         self.best_ckpt_path = self.out_dir / "best.pt"
         self.resume_ckpt = Path(resume_ckpt).expanduser().resolve() if resume_ckpt is not None else None
@@ -112,71 +116,148 @@ class RFMLTrainer:
         self.best_metric_value = float("inf") if self._best_metric_mode() == "min" else float("-inf")
         self.start_epoch = 0
         self.history: list[dict[str, float | int]] = []
+        self.fit_started_at = time.time()
 
         self.train_loader = self._build_loader("train", shuffle=True)
         self.val_loader = self._build_loader("val", shuffle=False)
 
         if self.resume_ckpt is not None and self.resume_ckpt.exists():
             self._load_checkpoint(self.resume_ckpt)
+        if self.start_epoch >= self.config.epochs:
+            raise ValueError(
+                "resume checkpoint epoch is already >= configured total epochs; "
+                f"checkpoint_epoch={self.start_epoch}, configured_epochs={self.config.epochs}. "
+                "Increase training.epochs to continue fine-tuning."
+            )
 
     def fit(self) -> dict[str, Any]:
         patience_counter = 0
-        for epoch in range(self.start_epoch, self.config.epochs):
-            train_loss, train_acc = self._run_epoch(epoch, training=True)
-            val_outputs = self.evaluate_loader(self.val_loader)
-            val_loss = val_outputs.loss
-            val_acc = val_outputs.accuracy
+        self.fit_started_at = time.time()
+        self._write_live_status(
+            status="running",
+            phase="train",
+            epoch=self.start_epoch + 1,
+            num_epochs=self.config.epochs,
+            history_length=len(self.history),
+            best_metric_value=self.best_metric_value,
+        )
+        try:
+            for epoch in range(self.start_epoch, self.config.epochs):
+                train_loss, train_acc = self._run_epoch(epoch, training=True)
+                val_outputs = self.evaluate_loader(self.val_loader, epoch=epoch, phase="val")
+                val_loss = val_outputs.loss
+                val_acc = val_outputs.accuracy
 
-            row = {
-                "epoch": epoch + 1,
-                "train_loss": train_loss,
-                "train_acc": train_acc,
-                "val_loss": val_loss,
-                "val_acc": val_acc,
-                "lr": float(self.optimizer.param_groups[0]["lr"]),
-            }
-            self.history.append(row)
-            self._append_csv_row(row)
-            self._log_tensorboard(epoch, row)
+                row = {
+                    "epoch": epoch + 1,
+                    "train_loss": train_loss,
+                    "train_acc": train_acc,
+                    "val_loss": val_loss,
+                    "val_acc": val_acc,
+                    "lr": float(self.optimizer.param_groups[0]["lr"]),
+                }
+                self.history.append(row)
+                self._append_csv_row(row)
+                self._log_tensorboard(epoch, row)
+                self._flush_history()
 
-            current_metric = self._metric_value_from_row(row)
-            is_best = self._is_better_metric(current_metric)
-            if is_best:
-                self.best_val_loss = val_loss
-                self.best_metric_value = current_metric
-                patience_counter = 0
-            else:
-                patience_counter += 1
+                current_metric = self._metric_value_from_row(row)
+                is_best = self._is_better_metric(current_metric)
+                if is_best:
+                    self.best_val_loss = val_loss
+                    self.best_metric_value = current_metric
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
 
-            self._save_checkpoint(epoch, is_best=is_best)
+                self._save_checkpoint(epoch, is_best=is_best)
 
-            if (epoch + 1) % self.config.save_every == 0:
-                self._save_checkpoint(epoch, is_best=False, named=True)
+                if (epoch + 1) % self.config.save_every == 0:
+                    self._save_checkpoint(epoch, is_best=False, named=True)
 
-            if patience_counter >= self.config.early_stopping_patience:
-                break
+                self._write_live_status(
+                    status="running",
+                    phase="epoch_end",
+                    epoch=epoch + 1,
+                    num_epochs=self.config.epochs,
+                    history_length=len(self.history),
+                    latest_row=row,
+                    patience_counter=patience_counter,
+                    best_metric_value=self.best_metric_value,
+                    is_best_epoch=is_best,
+                )
 
-        self.writer.flush()
-        self.writer.close()
-        self.history_json_path.write_text(json.dumps(self.history, indent=2), encoding="utf-8")
+                if patience_counter >= self.config.early_stopping_patience:
+                    self._write_live_status(
+                        status="completed",
+                        phase="stopped_early",
+                        epoch=epoch + 1,
+                        num_epochs=self.config.epochs,
+                        history_length=len(self.history),
+                        latest_row=row,
+                        best_metric_value=self.best_metric_value,
+                        stopped_early=True,
+                    )
+                    break
+        except KeyboardInterrupt:
+            self._flush_history()
+            self._write_live_status(
+                status="interrupted",
+                phase="train",
+                epoch=min(self.config.epochs, self.start_epoch + len(self.history) + 1),
+                num_epochs=self.config.epochs,
+                history_length=len(self.history),
+                best_metric_value=self.best_metric_value,
+            )
+            raise
+        except Exception as exc:
+            self._flush_history()
+            self._write_live_status(
+                status="failed",
+                phase="train",
+                epoch=min(self.config.epochs, self.start_epoch + len(self.history) + 1),
+                num_epochs=self.config.epochs,
+                history_length=len(self.history),
+                best_metric_value=self.best_metric_value,
+                error=repr(exc),
+            )
+            raise
+        finally:
+            self.writer.flush()
+            self.writer.close()
+            self._flush_history()
+
+        self._write_live_status(
+            status="completed",
+            phase="done",
+            epoch=self.history[-1]["epoch"] if self.history else self.start_epoch,
+            num_epochs=self.config.epochs,
+            history_length=len(self.history),
+            latest_row=self.history[-1] if self.history else None,
+            best_metric_value=self.best_metric_value,
+        )
         return {
             "best_ckpt": str(self.best_ckpt_path),
             "last_ckpt": str(self.last_ckpt_path),
             "history": self.history,
         }
 
-    def evaluate_loader(self, loader: DataLoader) -> EvaluationOutputs:
+    def evaluate_loader(self, loader: DataLoader, *, epoch: int | None = None, phase: str = "val") -> EvaluationOutputs:
         if self.config.task == "multitask":
-            return self._evaluate_multitask_loader(loader)
+            return self._evaluate_multitask_loader(loader, epoch=epoch, phase=phase)
 
         self.model.eval()
         losses: list[float] = []
         logits_list: list[torch.Tensor] = []
         labels_list: list[torch.Tensor] = []
         snrs_list: list[torch.Tensor] = []
+        total_batches = len(loader)
+        update_interval = self._live_update_interval(total_batches)
+        running_correct = 0
+        running_total = 0
 
         with torch.no_grad():
-            for batch in loader:
+            for batch_idx, batch in enumerate(loader):
                 x = batch["iq"].to(self.device, non_blocking=self.config.pin_memory)
                 y = batch["label"].to(self.device, non_blocking=self.config.pin_memory)
                 snr = batch["snr"]
@@ -187,9 +268,25 @@ class RFMLTrainer:
                     logits = self.model(x)
                     loss = self.criterion(logits, y)
                 losses.append(float(loss.item()))
+                preds = torch.argmax(logits.detach(), dim=1)
+                running_correct += int((preds == y).sum().item())
+                running_total += int(y.numel())
                 logits_list.append(logits.detach().cpu())
                 labels_list.append(y.detach().cpu())
                 snrs_list.append(snr.detach().cpu())
+                if epoch is not None and self._should_update_live_status(batch_idx, total_batches, update_interval):
+                    self._write_live_status(
+                        status="running",
+                        phase=phase,
+                        epoch=epoch + 1,
+                        num_epochs=self.config.epochs,
+                        batch=batch_idx + 1,
+                        num_batches=total_batches,
+                        running_loss=float(np.mean(losses)),
+                        running_acc=float(running_correct / max(1, running_total)),
+                        best_metric_value=self.best_metric_value,
+                        history_length=len(self.history),
+                    )
 
         all_logits = torch.cat(logits_list, dim=0)
         all_labels = torch.cat(labels_list, dim=0).numpy()
@@ -213,9 +310,13 @@ class RFMLTrainer:
         losses: list[float] = []
         preds_list: list[torch.Tensor] = []
         labels_list: list[torch.Tensor] = []
+        total_batches = len(loader)
+        update_interval = self._live_update_interval(total_batches)
+        running_correct = 0
+        running_total = 0
 
         progress = tqdm(loader, desc=f"epoch {epoch + 1}/{self.config.epochs}", leave=False)
-        for batch in progress:
+        for batch_idx, batch in enumerate(progress):
             x = batch["iq"].to(self.device, non_blocking=self.config.pin_memory)
             y = batch["label"].to(self.device, non_blocking=self.config.pin_memory)
 
@@ -227,7 +328,14 @@ class RFMLTrainer:
                 enabled=self.config.amp and self.device.type == "cuda",
             ):
                 logits = self.model(x)
-                loss = self.criterion(logits, y)
+                if training and self.config.low_snr_threshold is not None and self.config.low_snr_weight != 1.0:
+                    loss = compute_weighted_cross_entropy(
+                        logits,
+                        y,
+                        sample_weights=self._build_low_snr_sample_weights(batch["snr"]),
+                    )
+                else:
+                    loss = self.criterion(logits, y)
 
             if training:
                 self.scaler.scale(loss).backward()
@@ -238,9 +346,25 @@ class RFMLTrainer:
                 self.scaler.update()
 
             losses.append(float(loss.item()))
-            preds_list.append(torch.argmax(logits.detach(), dim=1).cpu())
+            preds = torch.argmax(logits.detach(), dim=1)
+            running_correct += int((preds == y).sum().item())
+            running_total += int(y.numel())
+            preds_list.append(preds.cpu())
             labels_list.append(y.detach().cpu())
             progress.set_postfix(loss=f"{np.mean(losses):.4f}")
+            if self._should_update_live_status(batch_idx, total_batches, update_interval):
+                self._write_live_status(
+                    status="running",
+                    phase="train" if training else "val",
+                    epoch=epoch + 1,
+                    num_epochs=self.config.epochs,
+                    batch=batch_idx + 1,
+                    num_batches=total_batches,
+                    running_loss=float(np.mean(losses)),
+                    running_acc=float(running_correct / max(1, running_total)),
+                    best_metric_value=self.best_metric_value,
+                    history_length=len(self.history),
+                )
 
         y_pred = torch.cat(preds_list, dim=0).numpy()
         y_true = torch.cat(labels_list, dim=0).numpy()
@@ -253,9 +377,13 @@ class RFMLTrainer:
         mod_preds_list: list[torch.Tensor] = []
         mod_labels_list: list[torch.Tensor] = []
         mod_masks_list: list[torch.Tensor] = []
+        total_batches = len(loader)
+        update_interval = self._live_update_interval(total_batches)
+        running_correct = 0
+        running_total = 0
 
         progress = tqdm(loader, desc=f"epoch {epoch + 1}/{self.config.epochs}", leave=False)
-        for batch in progress:
+        for batch_idx, batch in enumerate(progress):
             x = batch["iq"].to(self.device, non_blocking=self.config.pin_memory)
             mod_y = batch["modulation_label"].to(self.device, non_blocking=self.config.pin_memory)
             sense_y = batch["sensing_label"].to(self.device, non_blocking=self.config.pin_memory)
@@ -288,10 +416,28 @@ class RFMLTrainer:
                 self.scaler.update()
 
             losses.append(float(loss.item()))
-            mod_preds_list.append(torch.argmax(outputs["modulation_logits"].detach(), dim=1).cpu())
+            mod_preds = torch.argmax(outputs["modulation_logits"].detach(), dim=1)
+            valid_mask = mod_mask > 0.5
+            if torch.any(valid_mask):
+                running_correct += int((mod_preds[valid_mask] == mod_y[valid_mask]).sum().item())
+                running_total += int(valid_mask.sum().item())
+            mod_preds_list.append(mod_preds.cpu())
             mod_labels_list.append(mod_y.detach().cpu())
             mod_masks_list.append(mod_mask.detach().cpu())
             progress.set_postfix(loss=f"{np.mean(losses):.4f}")
+            if self._should_update_live_status(batch_idx, total_batches, update_interval):
+                self._write_live_status(
+                    status="running",
+                    phase="train" if training else "val",
+                    epoch=epoch + 1,
+                    num_epochs=self.config.epochs,
+                    batch=batch_idx + 1,
+                    num_batches=total_batches,
+                    running_loss=float(np.mean(losses)),
+                    running_acc=float(running_correct / max(1, running_total)) if running_total > 0 else float("nan"),
+                    best_metric_value=self.best_metric_value,
+                    history_length=len(self.history),
+                )
 
         mod_preds = torch.cat(mod_preds_list, dim=0).numpy()
         mod_labels = torch.cat(mod_labels_list, dim=0).numpy()
@@ -407,7 +553,19 @@ class RFMLTrainer:
     def _stft_input_channels(self) -> int:
         return self.stft_transform.num_channels if self.stft_transform is not None else 1
 
-    def _evaluate_multitask_loader(self, loader: DataLoader) -> EvaluationOutputs:
+    def _build_low_snr_sample_weights(self, snr: torch.Tensor) -> torch.Tensor:
+        threshold = float(self.config.low_snr_threshold if self.config.low_snr_threshold is not None else 0.0)
+        base = torch.ones_like(snr, dtype=torch.float32)
+        boosted = torch.full_like(base, float(self.config.low_snr_weight))
+        return torch.where(snr <= threshold, boosted, base)
+
+    def _evaluate_multitask_loader(
+        self,
+        loader: DataLoader,
+        *,
+        epoch: int | None = None,
+        phase: str = "val",
+    ) -> EvaluationOutputs:
         self.model.eval()
         losses: list[float] = []
         mod_logits_list: list[torch.Tensor] = []
@@ -416,9 +574,13 @@ class RFMLTrainer:
         sensing_logits_list: list[torch.Tensor] = []
         sensing_labels_list: list[torch.Tensor] = []
         snrs_list: list[torch.Tensor] = []
+        total_batches = len(loader)
+        update_interval = self._live_update_interval(total_batches)
+        running_correct = 0
+        running_total = 0
 
         with torch.no_grad():
-            for batch in loader:
+            for batch_idx, batch in enumerate(loader):
                 x = batch["iq"].to(self.device, non_blocking=self.config.pin_memory)
                 mod_y = batch["modulation_label"].to(self.device, non_blocking=self.config.pin_memory)
                 sense_y = batch["sensing_label"].to(self.device, non_blocking=self.config.pin_memory)
@@ -436,14 +598,33 @@ class RFMLTrainer:
                         outputs["sensing_logits"],
                         sense_y,
                         lambda_sensing=self.config.lambda_sensing,
-                    )
+                )
                 losses.append(float(loss_output.total_loss.item()))
-                mod_logits_list.append(outputs["modulation_logits"].detach().cpu())
+                modulation_logits = outputs["modulation_logits"].detach()
+                modulation_preds = torch.argmax(modulation_logits, dim=1)
+                valid_mask = mod_mask > 0.5
+                if torch.any(valid_mask):
+                    running_correct += int((modulation_preds[valid_mask] == mod_y[valid_mask]).sum().item())
+                    running_total += int(valid_mask.sum().item())
+                mod_logits_list.append(modulation_logits.cpu())
                 mod_labels_list.append(mod_y.detach().cpu())
                 mod_masks_list.append(mod_mask.detach().cpu())
                 sensing_logits_list.append(outputs["sensing_logits"].detach().cpu())
                 sensing_labels_list.append(sense_y.detach().cpu())
                 snrs_list.append(snr.detach().cpu())
+                if epoch is not None and self._should_update_live_status(batch_idx, total_batches, update_interval):
+                    self._write_live_status(
+                        status="running",
+                        phase=phase,
+                        epoch=epoch + 1,
+                        num_epochs=self.config.epochs,
+                        batch=batch_idx + 1,
+                        num_batches=total_batches,
+                        running_loss=float(np.mean(losses)),
+                        running_acc=float(running_correct / max(1, running_total)) if running_total > 0 else float("nan"),
+                        best_metric_value=self.best_metric_value,
+                        history_length=len(self.history),
+                    )
 
         mod_logits = torch.cat(mod_logits_list, dim=0)
         mod_labels = torch.cat(mod_labels_list, dim=0).numpy()
@@ -488,6 +669,35 @@ class RFMLTrainer:
             if key == "epoch":
                 continue
             self.writer.add_scalar(key, float(value), epoch + 1)
+
+    def _flush_history(self) -> None:
+        self.history_json_path.write_text(json.dumps(self.history, indent=2), encoding="utf-8")
+
+    def _live_update_interval(self, total_batches: int) -> int:
+        return max(1, total_batches // 25)
+
+    def _should_update_live_status(self, batch_idx: int, total_batches: int, update_interval: int) -> bool:
+        return batch_idx == 0 or (batch_idx + 1) % update_interval == 0 or (batch_idx + 1) == total_batches
+
+    def _write_live_status(self, *, status: str, phase: str, **payload: Any) -> None:
+        data = {
+            "status": status,
+            "phase": phase,
+            "task": self.config.task,
+            "model_name": self.config.model_name,
+            "device": str(self.device),
+            "out_dir": str(self.out_dir),
+            "best_metric": self.config.best_metric,
+            "best_metric_value": None if not np.isfinite(self.best_metric_value) else float(self.best_metric_value),
+            "resume_ckpt": str(self.resume_ckpt) if self.resume_ckpt is not None else None,
+            "resume_start_epoch": self.start_epoch,
+            "elapsed_seconds": float(max(0.0, time.time() - self.fit_started_at)),
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime()),
+        }
+        data.update(payload)
+        temp_path = self.live_status_path.with_suffix(".json.tmp")
+        temp_path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+        temp_path.replace(self.live_status_path)
 
     def _checkpoint_payload(self, epoch: int) -> dict[str, Any]:
         return {
