@@ -558,6 +558,10 @@ The monitor reads existing run artifacts only. It shows:
 - loss and accuracy curves from `train_log.csv`
 - best and latest checkpoint timestamps
 - evaluation summary and `accuracy_vs_snr.csv` if present
+- experiment overview cards for total runs, evaluated runs, and current best models
+- per-task leaderboards for AMC, sensing, and multi-task runs
+- sweep-family summaries to compare repeated rounds such as `stft_cnn` or `multitask`
+- recent-run table for quick tracking across many experiments
 
 Important resume rule:
 

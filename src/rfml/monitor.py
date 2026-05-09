@@ -14,12 +14,25 @@ from typing import Any
 @dataclass(frozen=True)
 class RunSnapshot:
     run_dir: Path
+    eval_dir: Path | None
     train_log: list[dict[str, Any]]
     history: list[dict[str, Any]]
     live_status: dict[str, Any] | None
     checkpoint_info: dict[str, Any]
     summary: dict[str, Any] | None
     accuracy_vs_snr: list[dict[str, Any]] | None
+
+
+@dataclass(frozen=True)
+class SweepRow:
+    family: str
+    task: str
+    count: int
+    best_run_name: str
+    best_metric_name: str
+    best_metric_value: float
+    latest_status: str
+    latest_updated_at: str
 
 
 def discover_run_dirs(root: str | Path) -> list[Path]:
@@ -33,6 +46,7 @@ def discover_run_dirs(root: str | Path) -> list[Path]:
 
 def load_run_snapshot(run_dir: str | Path) -> RunSnapshot:
     run_path = Path(run_dir).expanduser().resolve()
+    eval_dir = _find_eval_dir(run_path)
     train_log = _read_csv(run_path / "train_log.csv")
     history = _read_json_list(run_path / "history.json")
     live_status = _read_json_dict(run_path / "live_status.json")
@@ -41,8 +55,16 @@ def load_run_snapshot(run_dir: str | Path) -> RunSnapshot:
     accuracy_vs_snr = _read_csv_optional(run_path / "accuracy_vs_snr.csv")
     if accuracy_vs_snr is None:
         accuracy_vs_snr = _read_csv_optional(run_path / "modulation_accuracy_vs_snr.csv")
+    if eval_dir is not None:
+        if summary is None:
+            summary = _read_json_dict(eval_dir / "summary.json")
+        if accuracy_vs_snr is None:
+            accuracy_vs_snr = _read_csv_optional(eval_dir / "accuracy_vs_snr.csv")
+        if accuracy_vs_snr is None:
+            accuracy_vs_snr = _read_csv_optional(eval_dir / "modulation_accuracy_vs_snr.csv")
     return RunSnapshot(
         run_dir=run_path,
+        eval_dir=eval_dir,
         train_log=train_log,
         history=history,
         live_status=live_status,
@@ -68,8 +90,16 @@ def render_dashboard_html(
     refreshed_at: str,
     refresh_seconds: float,
 ) -> str:
+    overview = summarize_runs(runs)
+    leaderboard = build_leaderboard_rows(runs)
+    sweep_rows = build_sweep_rows(runs)
+    recent_table = build_recent_run_rows(runs)
     run_cards = "\n".join(_render_run_card(run) for run in runs) or "<p>No training runs found.</p>"
     gpu_table = _render_gpu_table(gpu_stats)
+    overview_cards = _render_overview_cards(overview)
+    leaderboard_tables = _render_leaderboard_tables(leaderboard)
+    sweep_table = _render_sweep_table(sweep_rows)
+    recent_runs_table = _render_recent_runs_table(recent_table)
     root_text = _escape(str(Path(root).expanduser().resolve()))
     return f"""<!doctype html>
 <html lang="en">
@@ -122,6 +152,18 @@ def render_dashboard_html(
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
       gap: 16px;
+    }}
+    .grid-2 {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+      gap: 16px;
+      margin-bottom: 16px;
+    }}
+    .grid-4 {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin: 16px 0;
     }}
     .panel {{
       background: linear-gradient(180deg, rgba(31,41,55,0.95), rgba(15,23,42,0.95));
@@ -195,6 +237,19 @@ def render_dashboard_html(
     }}
     .small {{ font-size: 12px; }}
     .nowrap {{ white-space: nowrap; }}
+    .scroll-x {{ overflow-x: auto; }}
+    .task-chip {{
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: rgba(56, 189, 248, 0.12);
+      border: 1px solid var(--border);
+      color: #7dd3fc;
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }}
     @media (max-width: 800px) {{
       .hero {{ flex-direction: column; }}
       .wrap {{ padding: 14px; }}
@@ -213,6 +268,26 @@ def render_dashboard_html(
         <h2>GPU</h2>
         {gpu_table}
       </div>
+    </section>
+    <section class="panel">
+      <h2>Experiment Overview</h2>
+      <div class="grid-4">
+        {overview_cards}
+      </div>
+    </section>
+    <section class="grid-2">
+      <article class="panel">
+        <h2>Task Leaderboard</h2>
+        {leaderboard_tables}
+      </article>
+      <article class="panel">
+        <h2>Sweep Families</h2>
+        {sweep_table}
+      </article>
+    </section>
+    <section class="panel">
+      <h2>Recent Runs</h2>
+      {recent_runs_table}
     </section>
     <section class="grid">
       {run_cards}
@@ -257,6 +332,140 @@ def collect_gpu_stats() -> list[dict[str, str]]:
 
 def now_local_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime())
+
+
+def summarize_runs(runs: list[RunSnapshot]) -> dict[str, Any]:
+    running = 0
+    completed = 0
+    with_summary = 0
+    best_amc = None
+    best_sensing_auc = None
+    best_multitask = None
+    for run in runs:
+        status = _run_status(run)
+        if status == "running":
+            running += 1
+        if status == "completed":
+            completed += 1
+        if run.summary:
+            with_summary += 1
+            metric_name, metric_value = _primary_metric(run)
+            if metric_name == "overall_accuracy":
+                if best_amc is None or metric_value > best_amc[1]:
+                    best_amc = (run.run_dir.name, metric_value)
+            elif metric_name == "roc_auc":
+                if best_sensing_auc is None or metric_value > best_sensing_auc[1]:
+                    best_sensing_auc = (run.run_dir.name, metric_value)
+            elif metric_name == "modulation_accuracy":
+                if best_multitask is None or metric_value > best_multitask[1]:
+                    best_multitask = (run.run_dir.name, metric_value)
+    return {
+        "run_count": len(runs),
+        "running_count": running,
+        "completed_count": completed,
+        "evaluated_count": with_summary,
+        "best_amc": best_amc,
+        "best_sensing_auc": best_sensing_auc,
+        "best_multitask": best_multitask,
+    }
+
+
+def build_leaderboard_rows(runs: list[RunSnapshot]) -> dict[str, list[dict[str, Any]]]:
+    buckets = {
+        "amc": [],
+        "spectrum_sensing": [],
+        "multitask": [],
+    }
+    for run in runs:
+        if not run.summary:
+            continue
+        task = str(run.summary.get("task", _infer_task(run))).lower()
+        row = {
+            "run_name": run.run_dir.name,
+            "task": task,
+            "status": _run_status(run),
+            "updated_at": _run_updated_at(run),
+        }
+        if task == "amc":
+            row["metric_name"] = "overall_accuracy"
+            row["metric_value"] = float(run.summary.get("overall_accuracy", float("nan")))
+            buckets["amc"].append(row)
+        elif task == "spectrum_sensing":
+            row["metric_name"] = "roc_auc"
+            row["metric_value"] = float(run.summary.get("roc_auc", run.summary.get("overall_accuracy", float("nan"))))
+            row["secondary"] = float(run.summary.get("overall_accuracy", float("nan")))
+            buckets["spectrum_sensing"].append(row)
+        elif task == "multitask":
+            row["metric_name"] = "modulation_accuracy"
+            row["metric_value"] = float(run.summary.get("modulation_accuracy", float("nan")))
+            row["secondary"] = float(run.summary.get("roc_auc", float("nan")))
+            buckets["multitask"].append(row)
+    for key in buckets:
+        buckets[key].sort(key=lambda item: item["metric_value"], reverse=True)
+    return buckets
+
+
+def build_sweep_rows(runs: list[RunSnapshot]) -> list[SweepRow]:
+    families: dict[tuple[str, str], list[RunSnapshot]] = {}
+    for run in runs:
+        family = _family_name(run.run_dir.name)
+        task = _infer_task(run)
+        families.setdefault((family, task), []).append(run)
+
+    rows: list[SweepRow] = []
+    for (family, task), family_runs in families.items():
+        best_run = None
+        best_metric_name = "-"
+        best_metric_value = float("-inf")
+        latest_run = max(family_runs, key=_run_updated_epoch_key)
+        for run in family_runs:
+            metric_name, metric_value = _primary_metric(run)
+            if metric_value == metric_value and metric_value > best_metric_value:
+                best_metric_value = metric_value
+                best_metric_name = metric_name
+                best_run = run
+        if best_run is None:
+            best_run = latest_run
+            best_metric_name = "-"
+            best_metric_value = float("nan")
+        rows.append(
+            SweepRow(
+                family=family,
+                task=task,
+                count=len(family_runs),
+                best_run_name=best_run.run_dir.name,
+                best_metric_name=best_metric_name,
+                best_metric_value=best_metric_value,
+                latest_status=_run_status(latest_run),
+                latest_updated_at=_run_updated_at(latest_run),
+            )
+        )
+    rows.sort(
+        key=lambda row: (
+            row.task,
+            -(row.best_metric_value if row.best_metric_value == row.best_metric_value else float("-inf")),
+            row.family,
+        )
+    )
+    return rows
+
+
+def build_recent_run_rows(runs: list[RunSnapshot]) -> list[dict[str, Any]]:
+    rows = []
+    for run in sorted(runs, key=_run_updated_epoch_key, reverse=True):
+        metric_name, metric_value = _primary_metric(run)
+        rows.append(
+            {
+                "run_name": run.run_dir.name,
+                "task": _infer_task(run),
+                "status": _run_status(run),
+                "updated_at": _run_updated_at(run),
+                "metric_name": metric_name,
+                "metric_value": metric_value,
+                "epoch": _run_latest_epoch(run),
+            }
+        )
+    return rows[:12]
 
 
 def _read_csv(path: Path) -> list[dict[str, Any]]:
@@ -325,6 +534,133 @@ def _checkpoint_info(run_dir: Path) -> dict[str, Any]:
     return items
 
 
+def _find_eval_dir(run_dir: Path) -> Path | None:
+    parent = run_dir.parent
+    candidates = []
+    for path in parent.glob(f"{run_dir.name}_eval*"):
+        if not path.is_dir():
+            continue
+        if (path / "summary.json").exists() or (path / "accuracy_vs_snr.csv").exists() or (path / "modulation_accuracy_vs_snr.csv").exists():
+            candidates.append(path)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
+def _render_overview_cards(overview: dict[str, Any]) -> str:
+    best_amc = overview.get("best_amc")
+    best_sensing_auc = overview.get("best_sensing_auc")
+    best_multitask = overview.get("best_multitask")
+    cards = [
+        ("runs", _fmt(overview.get("run_count"), precision=0), "discovered run directories"),
+        ("running", _fmt(overview.get("running_count"), precision=0), "currently active runs"),
+        ("evaluated", _fmt(overview.get("evaluated_count"), precision=0), "runs with summary.json"),
+        (
+            "best AMC",
+            _fmt(best_amc[1], precision=4) if best_amc else "-",
+            best_amc[0] if best_amc else "no evaluated AMC run",
+        ),
+        (
+            "best sensing AUC",
+            _fmt(best_sensing_auc[1], precision=4) if best_sensing_auc else "-",
+            best_sensing_auc[0] if best_sensing_auc else "no sensing run",
+        ),
+        (
+            "best multitask AMC",
+            _fmt(best_multitask[1], precision=4) if best_multitask else "-",
+            best_multitask[0] if best_multitask else "no multitask run",
+        ),
+    ]
+    return "".join(
+        f"<div class='metric'><div class='label'>{_escape(label)}</div><div class='value'>{_escape(value)}</div><div class='muted small'>{_escape(desc)}</div></div>"
+        for label, value, desc in cards
+    )
+
+
+def _render_leaderboard_tables(leaderboard: dict[str, list[dict[str, Any]]]) -> str:
+    sections = []
+    titles = {
+        "amc": "AMC",
+        "spectrum_sensing": "Spectrum Sensing",
+        "multitask": "Multi-task",
+    }
+    for task_key in ("amc", "spectrum_sensing", "multitask"):
+        rows = leaderboard.get(task_key, [])
+        if not rows:
+            sections.append(f"<div class='section'><h3>{titles[task_key]}</h3><p class='muted'>No evaluated runs.</p></div>")
+            continue
+        table_rows = []
+        for idx, row in enumerate(rows[:5], start=1):
+            secondary = ""
+            if "secondary" in row and row["secondary"] == row["secondary"]:
+                if task_key == "spectrum_sensing":
+                    secondary = f" | acc {_fmt(row['secondary'], precision=4)}"
+                elif task_key == "multitask":
+                    secondary = f" | AUC {_fmt(row['secondary'], precision=4)}"
+            table_rows.append(
+                "<tr>"
+                f"<td>{idx}</td>"
+                f"<td class='mono'>{_escape(row['run_name'])}</td>"
+                f"<td>{_fmt(row['metric_value'], precision=4)}{_escape(secondary)}</td>"
+                f"<td>{_escape(row['status'])}</td>"
+                "</tr>"
+            )
+        sections.append(
+            f"<div class='section'><h3>{titles[task_key]}</h3>"
+            "<div class='scroll-x'><table><thead><tr><th>#</th><th>Run</th><th>Primary Metric</th><th>Status</th></tr></thead>"
+            f"<tbody>{''.join(table_rows)}</tbody></table></div></div>"
+        )
+    return "".join(sections)
+
+
+def _render_sweep_table(rows: list[SweepRow]) -> str:
+    if not rows:
+        return "<p class='muted'>No sweep families found.</p>"
+    body = []
+    for row in rows:
+        body.append(
+            "<tr>"
+            f"<td class='mono'>{_escape(row.family)}</td>"
+            f"<td><span class='task-chip'>{_escape(row.task)}</span></td>"
+            f"<td>{row.count}</td>"
+            f"<td class='mono'>{_escape(row.best_run_name)}</td>"
+            f"<td>{_escape(row.best_metric_name)} = {_fmt(row.best_metric_value, precision=4)}</td>"
+            f"<td>{_escape(row.latest_status)}</td>"
+            f"<td class='nowrap'>{_escape(row.latest_updated_at)}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='scroll-x'><table><thead><tr><th>Family</th><th>Task</th><th>Runs</th><th>Best Run</th>"
+        "<th>Best Metric</th><th>Latest Status</th><th>Latest Update</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody></table></div>"
+    )
+
+
+def _render_recent_runs_table(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return "<p class='muted'>No runs found.</p>"
+    body = []
+    for row in rows:
+        metric_text = "-"
+        if row["metric_value"] == row["metric_value"]:
+            metric_text = f"{row['metric_name']}={_fmt(row['metric_value'], precision=4)}"
+        body.append(
+            "<tr>"
+            f"<td class='mono'>{_escape(row['run_name'])}</td>"
+            f"<td><span class='task-chip'>{_escape(row['task'])}</span></td>"
+            f"<td>{_escape(row['status'])}</td>"
+            f"<td>{_fmt(row['epoch'], precision=0)}</td>"
+            f"<td>{_escape(metric_text)}</td>"
+            f"<td class='nowrap'>{_escape(row['updated_at'])}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='scroll-x'><table><thead><tr><th>Run</th><th>Task</th><th>Status</th><th>Epoch</th><th>Primary Metric</th><th>Updated</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody></table></div>"
+    )
+
+
 def _render_run_card(run: RunSnapshot) -> str:
     latest = run.train_log[-1] if run.train_log else {}
     best = _best_metrics(run.train_log)
@@ -351,6 +687,7 @@ def _render_run_card(run: RunSnapshot) -> str:
     recent_rows = _render_recent_rows(run.train_log)
     run_name = _escape(run.run_dir.name)
     run_path = _escape(str(run.run_dir))
+    eval_path = _escape(str(run.eval_dir)) if run.eval_dir is not None else "-"
     return f"""
     <article class="panel">
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">
@@ -369,6 +706,7 @@ def _render_run_card(run: RunSnapshot) -> str:
         <div class="metric"><div class="label">Val acc</div><div class="value">{latest_val_acc}</div></div>
       </div>
       <div class="muted small" style="margin-bottom:12px;">{progress_text}</div>
+      <div class="muted small" style="margin-bottom:12px;">eval_dir: <span class="mono">{eval_path}</span></div>
       <div class="section">
         <h3>Loss / Accuracy</h3>
         {chart_svg}
@@ -650,3 +988,72 @@ def _escape(text: str) -> str:
         .replace('"', "&quot;")
         .replace("'", "&#39;")
     )
+
+
+def _run_status(run: RunSnapshot) -> str:
+    live = run.live_status or {}
+    return str(live.get("status", "completed" if run.train_log else "idle")).lower()
+
+
+def _run_updated_at(run: RunSnapshot) -> str:
+    live = run.live_status or {}
+    updated_at = live.get("updated_at")
+    if updated_at:
+        return str(updated_at)
+    if run.checkpoint_info:
+        return max(str(item.get("mtime", "")) for item in run.checkpoint_info.values())
+    return "-"
+
+
+def _run_latest_epoch(run: RunSnapshot) -> float | None:
+    live = run.live_status or {}
+    if live.get("epoch") is not None:
+        return float(live["epoch"])
+    if run.train_log:
+        return float(run.train_log[-1].get("epoch", 0))
+    return None
+
+
+def _run_updated_epoch_key(run: RunSnapshot) -> tuple[str, float]:
+    return (_run_updated_at(run), _run_latest_epoch(run) or -1.0)
+
+
+def _infer_task(run: RunSnapshot) -> str:
+    if run.summary and run.summary.get("task"):
+        return str(run.summary["task"])
+    if run.live_status and run.live_status.get("task"):
+        return str(run.live_status["task"])
+    name = run.run_dir.name.lower()
+    if "multitask" in name:
+        return "multitask"
+    if "sensing" in name:
+        return "spectrum_sensing"
+    return "amc"
+
+
+def _primary_metric(run: RunSnapshot) -> tuple[str, float]:
+    if not run.summary:
+        return "-", float("nan")
+    task = str(run.summary.get("task", _infer_task(run))).lower()
+    if task == "amc":
+        return "overall_accuracy", float(run.summary.get("overall_accuracy", float("nan")))
+    if task == "spectrum_sensing":
+        return "roc_auc", float(run.summary.get("roc_auc", run.summary.get("overall_accuracy", float("nan"))))
+    if task == "multitask":
+        return "modulation_accuracy", float(run.summary.get("modulation_accuracy", float("nan")))
+    return "-", float("nan")
+
+
+def _family_name(run_name: str) -> str:
+    name = run_name
+    for suffix in ("_eval_rerun", "_eval_current", "_eval", "_seed42"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+    parts = name.split("_")
+    trimmed = parts[:]
+    for marker in ("round1", "round2", "round3", "round4", "round5", "round6"):
+        if marker in trimmed:
+            trimmed = trimmed[: trimmed.index(marker)]
+            break
+    trimmed = [part for part in trimmed if part]
+    return "_".join(trimmed) if trimmed else name

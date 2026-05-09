@@ -190,6 +190,8 @@ def test_resume_uses_current_config_optimizer_hparams(tmp_path: Path) -> None:
 def test_monitor_snapshot_and_dashboard_render(tmp_path: Path) -> None:
     run_dir = tmp_path / "demo_run"
     run_dir.mkdir(parents=True)
+    eval_dir = tmp_path / "demo_run_eval"
+    eval_dir.mkdir(parents=True)
     (run_dir / "train_log.csv").write_text(
         "epoch,train_loss,train_acc,val_loss,val_acc,lr\n"
         "1,2.0,0.3,1.8,0.35,0.001\n"
@@ -219,14 +221,15 @@ def test_monitor_snapshot_and_dashboard_render(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    (run_dir / "summary.json").write_text(json.dumps({"overall_accuracy": 0.52}, indent=2), encoding="utf-8")
-    (run_dir / "accuracy_vs_snr.csv").write_text(
+    (eval_dir / "summary.json").write_text(json.dumps({"task": "amc", "overall_accuracy": 0.52}, indent=2), encoding="utf-8")
+    (eval_dir / "accuracy_vs_snr.csv").write_text(
         "snr,accuracy\n-20,0.1\n0,0.3\n20,0.8\n",
         encoding="utf-8",
     )
     (run_dir / "best.pt").write_bytes(b"pt")
 
     snapshot = load_run_snapshot(run_dir)
+    assert snapshot.eval_dir == eval_dir
     assert len(snapshot.train_log) == 2
     assert snapshot.live_status is not None
     assert snapshot.summary is not None
@@ -238,7 +241,12 @@ def test_monitor_snapshot_and_dashboard_render(tmp_path: Path) -> None:
         refresh_seconds=5.0,
     )
     assert "RFML Training Monitor" in html
+    assert "Experiment Overview" in html
+    assert "Task Leaderboard" in html
+    assert "Sweep Families" in html
+    assert "Recent Runs" in html
     assert "demo_run" in html
+    assert "demo_run_eval" in html
     assert "overall_accuracy" in html
 
 
