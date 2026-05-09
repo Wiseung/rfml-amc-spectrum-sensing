@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from torch import nn
 from torch.optim import Optimizer
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
@@ -67,6 +67,7 @@ class TrainerConfig:
     best_metric: str = "val_loss"
     low_snr_threshold: float | None = None
     low_snr_weight: float = 1.0
+    low_snr_oversample_factor: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -530,10 +531,21 @@ class RFMLTrainer:
                 scan_chunk_size=self.config.scan_chunk_size,
                 transform=transform,
             )
+        sampler = None
+        effective_shuffle = shuffle
+        if (
+            split_name == "train"
+            and self.config.task == "amc"
+            and self.config.low_snr_threshold is not None
+            and self.config.low_snr_oversample_factor > 1.0
+        ):
+            sampler = self._build_low_snr_sampler(dataset)
+            effective_shuffle = False
         return DataLoader(
             dataset,
             batch_size=self.config.batch_size,
-            shuffle=shuffle,
+            shuffle=effective_shuffle,
+            sampler=sampler,
             num_workers=self.config.num_workers,
             pin_memory=self.config.pin_memory,
             drop_last=False,
@@ -558,6 +570,25 @@ class RFMLTrainer:
         base = torch.ones_like(snr, dtype=torch.float32)
         boosted = torch.full_like(base, float(self.config.low_snr_weight))
         return torch.where(snr <= threshold, boosted, base)
+
+    def _build_low_snr_sampler(self, dataset: RadioML2018Dataset) -> WeightedRandomSampler | None:
+        threshold = float(self.config.low_snr_threshold if self.config.low_snr_threshold is not None else 0.0)
+        factor = float(self.config.low_snr_oversample_factor)
+        if factor <= 1.0:
+            return None
+        weights = np.ones(len(dataset), dtype=np.float64)
+        batch_size = max(1, int(self.config.scan_chunk_size))
+        with dataset.open_h5() as h5f:
+            for start in range(0, len(dataset), batch_size):
+                stop = min(start + batch_size, len(dataset))
+                indices = dataset.indices[start:stop]
+                snr_values = np.asarray(h5f["Z"][indices]).reshape(len(indices), -1)[:, 0]
+                weights[start:stop] = np.where(snr_values <= threshold, factor, 1.0)
+        return WeightedRandomSampler(
+            weights=torch.as_tensor(weights, dtype=torch.double),
+            num_samples=len(dataset),
+            replacement=True,
+        )
 
     def _evaluate_multitask_loader(
         self,

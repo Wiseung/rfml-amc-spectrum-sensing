@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import ast
+from contextlib import contextmanager
 from typing import Any, Sequence
 
 import h5py
@@ -309,6 +310,14 @@ class RadioML2018Dataset(Dataset[dict[str, Any]]):
             self._z_ds = self._h5_file["Z"]
             self._h5_pid = current_pid
         return self._h5_file
+
+    @contextmanager
+    def open_h5(self) -> Any:
+        h5f = h5py.File(self.h5_path, "r")
+        try:
+            yield h5f
+        finally:
+            h5f.close()
 
     def _histogram(self, *, key: str) -> dict[int | float, int]:
         if len(self.indices) == 0:

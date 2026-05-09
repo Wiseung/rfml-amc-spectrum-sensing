@@ -65,6 +65,12 @@ Recent tuning highlights:
   accuracy from `0.1928` to `0.1991`, and lifts high-SNR mean from `0.7659` to `0.8294`
 - this is the first spectrogram route in the project to exceed `CNN1D` (`0.5232`),
   though it still remains below `ResNet1D-small` (`0.5984`)
+- later wide-backbone STFT sweeps did not beat the round-6 baseline:
+  `round-8 log_power_phase = 0.3989`, `round-9 log_power_real_imag = 0.4130`
+- the current evidence therefore says the best STFT recipe remains the lighter
+  round-6 fine-tune, and simply widening the 2D network or swapping to
+  `log_power_real_imag` was not sufficient to close the remaining gap to
+  `ResNet1D-small`
 
 ## Project Layout
 

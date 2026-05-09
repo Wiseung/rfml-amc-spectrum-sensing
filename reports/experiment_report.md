@@ -481,6 +481,80 @@ Interpretation:
 - the best current overall AMC result remains single-task `ResNet1D-small`, but
   the gap is now materially smaller than before
 
+### 7.9 STFT round-8 and round-9 stronger-backbone follow-up
+
+After establishing round-6 as the spectrogram baseline, the next sweep tested
+whether wider 2D models and more explicit low-SNR rebalancing could close the
+remaining gap to `ResNet1D-small`.
+
+Round-8 configuration:
+
+```text
+configs/stft_cnn_round8_deeper_wide_logpower_phase_lowsnr_mix.yaml
+```
+
+Key changes versus round-6:
+
+- wider channels: `[64, 128, 256]`
+- larger classifier head: `512`
+- `batch_size = 512`
+- low-SNR sample weighting plus moderate oversampling
+
+Round-8 best validation point:
+
+- epoch `2`
+- validation accuracy: `0.3987`
+
+Round-8 final test metrics:
+
+- overall accuracy: `0.3989`
+- low-SNR mean accuracy (`<= 0 dB`): `0.1796`
+- high-SNR mean accuracy (`>= 16 dB`): `0.5670`
+- best SNR bucket: `20 dB`
+- best bucket accuracy: `0.5724`
+
+Round-9 configuration:
+
+```text
+configs/stft_cnn_round9_deeper_wide_logpower_realimag_lowsnr_mix.yaml
+```
+
+Key change versus round-8:
+
+- swap the STFT representation from `log_power_phase` to `log_power_real_imag`
+
+Round-9 best validation point:
+
+- epoch `2`
+- validation accuracy: `0.4135`
+
+Round-9 final test metrics:
+
+- overall accuracy: `0.4130`
+- low-SNR mean accuracy (`<= 0 dB`): `0.1808`
+- high-SNR mean accuracy (`>= 16 dB`): `0.5894`
+- best SNR bucket: `24 dB`
+- best bucket accuracy: `0.5923`
+
+Comparison against the established STFT baseline:
+
+- versus STFT round-6 (`0.5445`), round-8 drops by about `0.1456`
+- versus STFT round-6 (`0.5445`), round-9 drops by about `0.1315`
+- versus STFT round-6 low-SNR mean (`0.1991`), both round-8 and round-9 are worse
+- versus STFT round-6 high-SNR mean (`0.8294`), both round-8 and round-9 are much worse
+
+Interpretation:
+
+- simply widening the 2D spectrogram network was not enough; the wider round-8
+  model overfit the validation path early and generalized much worse than round-6
+- switching to `log_power_real_imag` recovered a small amount over round-8, but
+  still did not approach the stronger round-6 recipe
+- the strongest STFT route in the project therefore remains round-6, not the
+  later wide-backbone sweeps
+- this sweep narrows the search space: the next credible STFT experiments should
+  focus on more targeted regularization, normalization, or hybrid time-frequency
+  fusion rather than simply scaling up the 2D spectrogram backbone
+
 ## 8. Reproduction Commands
 
 ### 7.1 Environment smoke test
@@ -788,6 +862,8 @@ Completed round-1 table:
 | STFT-CNN round-3 | AMC | `0.4982` | deeper backbone further improved high-SNR ceiling |
 | STFT-CNN round-4 | AMC | `0.5103` | richer `log_power_phase` channels improved high-SNR ceiling again |
 | STFT-CNN round-6 | AMC | `0.5445` | low-SNR-weighted fine-tune is the first STFT run to beat CNN1D |
+| STFT-CNN round-8 | AMC | `0.3989` | wider `log_power_phase` model with low-SNR oversampling regressed badly |
+| STFT-CNN round-9 | AMC | `0.4130` | `log_power_real_imag` recovered slightly over round-8, still far below round-6 |
 | Energy Detection | Sensing | ROC-AUC `0.5210` | non-deep baseline |
 | CNN1D detector | Sensing | acc `0.8491`, AUC `0.9834` | binary deep sensing |
 | Multi-task round-1 | AMC + Sensing | AMC `0.4563`, sensing AUC `0.9858` | shared encoder improved sensing, hurt AMC |
@@ -799,9 +875,8 @@ Completed round-1 table:
   saturation level differs strongly by architecture
 - `ResNet1D` consistently outperformed plain `CNN1D`, especially from
   mid-to-high SNR
-- the latest `STFT-CNN` route improved from `0.3433` to `0.5445`; it now exceeds
-  `CNN1D` overall and reduces the gap to `ResNet1D-small`, with gains in both
-  low-SNR and high-SNR regions
+- the best `STFT-CNN` route remains round-6 at `0.5445`; later wide-backbone
+  sweeps (`0.3989`, `0.4130`) did not improve on that baseline
 - deep sensing improved massively over energy detection, moving from ROC-AUC
   `0.5210` to `0.9834`
 - the round-2 multi-task tuning result confirms that checkpoint criterion and
@@ -811,7 +886,9 @@ Completed round-1 table:
   though it still falls short of single-task `ResNet1D-small` AMC accuracy
 - the strengthened STFT experiments confirm that spectrogram models were not a
   dead end; round-6 makes them a competitive mainline alternative by beating CNN1D
-- richer spectrogram channels helped, and the later low-SNR-weighted fine-tune
-  showed that optimization strategy mattered as much as representation choice
-- the remaining limitation is now the residual gap to the dedicated ResNet1D
-  baseline rather than whether the spectrogram route is viable at all
+- however, the round-8 and round-9 follow-up sweep also shows that naive scaling
+  of the 2D backbone is not a free win and can degrade both low-SNR and high-SNR
+  generalization substantially
+- the remaining limitation is still the residual gap to the dedicated ResNet1D
+  baseline, and the next useful STFT work should target representation fusion or
+  regularization rather than only larger spectrogram backbones

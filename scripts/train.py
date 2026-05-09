@@ -74,6 +74,7 @@ def load_config(path: str | Path) -> TrainerConfig:
         best_metric=str(train_cfg.get("best_metric", "val_loss")),
         low_snr_threshold=float(train_cfg["low_snr_threshold"]) if train_cfg.get("low_snr_threshold") is not None else None,
         low_snr_weight=float(train_cfg.get("low_snr_weight", 1.0)),
+        low_snr_oversample_factor=float(train_cfg.get("low_snr_oversample_factor", 1.0)),
     )
 
 

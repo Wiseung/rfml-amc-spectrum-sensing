@@ -110,6 +110,20 @@ def test_stft_cnn_deeper_two_channel_forward_shape() -> None:
     assert tuple(y.shape) == (2, 24)
 
 
+def test_stft_cnn_resnetplus_forward_shape() -> None:
+    model = STFTCNN(
+        in_channels=2,
+        num_classes=24,
+        channels=(24, 48, 96),
+        classifier_hidden_dim=64,
+        dropout=0.1,
+        backbone="resnetplus",
+    )
+    x = torch.randn(2, 2, 128, 65)
+    y = model(x)
+    assert tuple(y.shape) == (2, 24)
+
+
 def test_stft_trainer_runs(tmp_path: Path) -> None:
     h5_path = _build_stft_h5(tmp_path / "stft_train.h5")
     split_bundle = create_stratified_splits_from_h5(h5_path, seed=42)
@@ -150,6 +164,50 @@ def test_stft_trainer_runs(tmp_path: Path) -> None:
     )
     result = trainer.fit()
     assert len(result["history"]) == 2
+
+
+def test_stft_trainer_builds_low_snr_sampler(tmp_path: Path) -> None:
+    h5_path = _build_stft_h5(tmp_path / "stft_sampler.h5")
+    split_bundle = create_stratified_splits_from_h5(h5_path, seed=42)
+    split_path = save_split_bundle(split_bundle, tmp_path / "splits_sampler.npz")
+    config = TrainerConfig(
+        task="amc",
+        model_name="stft_cnn",
+        num_classes=4,
+        epochs=1,
+        batch_size=16,
+        lr=1e-3,
+        optimizer="adamw",
+        weight_decay=1e-4,
+        amp=False,
+        num_workers=0,
+        pin_memory=False,
+        grad_clip=1.0,
+        early_stopping_patience=8,
+        device="cpu",
+        dropout=0.1,
+        classifier_hidden_dim=64,
+        channels=(16, 32, 64),
+        kernel_sizes=(7, 5, 3),
+        save_every=2,
+        scan_chunk_size=64,
+        stft_n_fft=64,
+        stft_hop_length=16,
+        stft_window="hann",
+        stft_output="log_power_phase",
+        stft_backend="torch",
+        stft_backbone="deep",
+        low_snr_threshold=0.0,
+        low_snr_weight=2.0,
+        low_snr_oversample_factor=3.0,
+    )
+    trainer = RFMLTrainer(
+        config,
+        h5_path=h5_path,
+        split_path=split_path,
+        out_dir=tmp_path / "sampler_run",
+    )
+    assert trainer.train_loader.sampler is not None
 
 
 def _build_stft_h5(path: Path) -> Path:
