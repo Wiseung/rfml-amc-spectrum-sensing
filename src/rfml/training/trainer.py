@@ -725,6 +725,11 @@ class RFMLTrainer:
         payload = torch.load(path, map_location="cpu")
         self.model.load_state_dict(payload["model_state_dict"])
         self.optimizer.load_state_dict(payload["optimizer_state_dict"])
+        # Resume model weights and optimizer moments, but keep the current config's
+        # scheduled optimizer hyperparameters so fine-tune sweeps actually take effect.
+        for group in self.optimizer.param_groups:
+            group["lr"] = float(self.config.lr)
+            group["weight_decay"] = float(self.config.weight_decay)
         self.scaler.load_state_dict(payload["scaler_state_dict"])
         self.best_val_loss = float(payload.get("best_val_loss", float("inf")))
         default_metric_value = float("inf") if self._best_metric_mode() == "min" else float("-inf")

@@ -124,6 +124,69 @@ def test_resume_rejects_when_target_epochs_not_greater_than_checkpoint_epoch(tmp
         )
 
 
+def test_resume_uses_current_config_optimizer_hparams(tmp_path: Path) -> None:
+    h5_path = _build_training_h5(tmp_path / "resume_opt_radioml.h5")
+    split_bundle = create_stratified_splits_from_h5(h5_path, seed=42)
+    split_path = save_split_bundle(split_bundle, tmp_path / "splits_resume_opt.npz")
+    base_out_dir = tmp_path / "resume_opt_base"
+
+    base_config = TrainerConfig(
+        task="amc",
+        model_name="cnn1d",
+        num_classes=4,
+        epochs=2,
+        batch_size=16,
+        lr=1e-3,
+        optimizer="adamw",
+        weight_decay=1e-4,
+        amp=False,
+        num_workers=0,
+        pin_memory=False,
+        grad_clip=1.0,
+        early_stopping_patience=8,
+        device="cpu",
+        dropout=0.1,
+        classifier_hidden_dim=64,
+        channels=(16, 32, 64),
+        kernel_sizes=(7, 5, 3),
+        save_every=5,
+        scan_chunk_size=256,
+    )
+    RFMLTrainer(base_config, h5_path=h5_path, split_path=split_path, out_dir=base_out_dir).fit()
+
+    resumed_config = TrainerConfig(
+        task="amc",
+        model_name="cnn1d",
+        num_classes=4,
+        epochs=4,
+        batch_size=16,
+        lr=5e-4,
+        optimizer="adamw",
+        weight_decay=5e-5,
+        amp=False,
+        num_workers=0,
+        pin_memory=False,
+        grad_clip=1.0,
+        early_stopping_patience=8,
+        device="cpu",
+        dropout=0.1,
+        classifier_hidden_dim=64,
+        channels=(16, 32, 64),
+        kernel_sizes=(7, 5, 3),
+        save_every=5,
+        scan_chunk_size=256,
+    )
+    resumed = RFMLTrainer(
+        resumed_config,
+        h5_path=h5_path,
+        split_path=split_path,
+        out_dir=tmp_path / "resume_opt_new",
+        resume_ckpt=base_out_dir / "best.pt",
+    )
+    assert resumed.optimizer.param_groups[0]["lr"] == pytest.approx(5e-4)
+    assert resumed.optimizer.param_groups[0]["weight_decay"] == pytest.approx(5e-5)
+
+
 def test_monitor_snapshot_and_dashboard_render(tmp_path: Path) -> None:
     run_dir = tmp_path / "demo_run"
     run_dir.mkdir(parents=True)
