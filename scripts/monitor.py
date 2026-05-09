@@ -7,7 +7,7 @@ import argparse
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from _bootstrap import delegate_to_conda_if_needed, delegated_env_name
 
@@ -19,7 +19,7 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from rfml.monitor import collect_gpu_stats, list_run_snapshots, now_local_iso, render_dashboard_html
+from rfml.monitor import DashboardFilters, collect_gpu_stats, list_run_snapshots, now_local_iso, render_dashboard_html
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,6 +40,12 @@ class MonitorHandler(BaseHTTPRequestHandler):
         if parsed.path not in {"/", "/index.html"}:
             self.send_error(404, "Not Found")
             return
+        query = parse_qs(parsed.query)
+        filters = DashboardFilters(
+            task=_query_value(query, "task"),
+            status=_query_value(query, "status"),
+            family=_query_value(query, "family"),
+        )
         root = type(self).root
         refresh_seconds = type(self).refresh_seconds
         runs = sorted(
@@ -53,6 +59,7 @@ class MonitorHandler(BaseHTTPRequestHandler):
             gpu_stats=collect_gpu_stats(),
             refreshed_at=now_local_iso(),
             refresh_seconds=refresh_seconds,
+            filters=filters,
         )
         body = html.encode("utf-8")
         self.send_response(200)
@@ -67,6 +74,14 @@ class MonitorHandler(BaseHTTPRequestHandler):
 
 class ReusableThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
+
+
+def _query_value(query: dict[str, list[str]], key: str) -> str:
+    values = query.get(key)
+    if not values:
+        return "all"
+    value = values[0].strip()
+    return value if value else "all"
 
 
 def main() -> int:

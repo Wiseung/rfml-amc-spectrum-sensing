@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,13 @@ class SweepRow:
     best_metric_value: float
     latest_status: str
     latest_updated_at: str
+
+
+@dataclass(frozen=True)
+class DashboardFilters:
+    task: str = "all"
+    status: str = "all"
+    family: str = "all"
 
 
 def discover_run_dirs(root: str | Path) -> list[Path]:
@@ -89,16 +98,23 @@ def render_dashboard_html(
     gpu_stats: list[dict[str, str]],
     refreshed_at: str,
     refresh_seconds: float,
+    filters: DashboardFilters | None = None,
 ) -> str:
-    overview = summarize_runs(runs)
-    leaderboard = build_leaderboard_rows(runs)
-    sweep_rows = build_sweep_rows(runs)
-    recent_table = build_recent_run_rows(runs)
-    run_cards = "\n".join(_render_run_card(run) for run in runs) or "<p>No training runs found.</p>"
+    active_filters = filters or DashboardFilters()
+    filtered_runs = filter_runs(runs, active_filters)
+    filter_options = build_filter_options(runs)
+    overview = summarize_runs(filtered_runs)
+    leaderboard = build_leaderboard_rows(filtered_runs)
+    sweep_rows = build_sweep_rows(filtered_runs)
+    family_trends = build_family_trends(filtered_runs)
+    recent_table = build_recent_run_rows(filtered_runs)
+    run_cards = "\n".join(_render_run_card(run) for run in filtered_runs) or "<p>No training runs found for the selected filters.</p>"
     gpu_table = _render_gpu_table(gpu_stats)
     overview_cards = _render_overview_cards(overview)
     leaderboard_tables = _render_leaderboard_tables(leaderboard)
     sweep_table = _render_sweep_table(sweep_rows)
+    filter_panel = _render_filter_panel(active_filters, filter_options, len(filtered_runs), len(runs))
+    family_trend_grid = _render_family_trend_grid(family_trends)
     recent_runs_table = _render_recent_runs_table(recent_table)
     root_text = _escape(str(Path(root).expanduser().resolve()))
     return f"""<!doctype html>
@@ -250,6 +266,71 @@ def render_dashboard_html(
       text-transform: uppercase;
       letter-spacing: 0.04em;
     }}
+    .toolbar {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      align-items: end;
+    }}
+    .toolbar label {{
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }}
+    .toolbar select {{
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.9);
+      color: var(--text);
+      font-family: var(--sans);
+    }}
+    .toolbar-actions {{
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }}
+    .button {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      padding: 0 14px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      color: var(--text);
+      text-decoration: none;
+      background: rgba(56, 189, 248, 0.12);
+      font-weight: 600;
+    }}
+    .button-secondary {{
+      background: rgba(15, 23, 42, 0.8);
+    }}
+    .family-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
+    }}
+    .family-mini {{
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.6);
+    }}
+    .family-mini h3 {{
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+      margin-bottom: 8px;
+    }}
+    .family-mini svg {{
+      min-height: 126px;
+    }}
     @media (max-width: 800px) {{
       .hero {{ flex-direction: column; }}
       .wrap {{ padding: 14px; }}
@@ -270,6 +351,10 @@ def render_dashboard_html(
       </div>
     </section>
     <section class="panel">
+      <h2>Filters</h2>
+      {filter_panel}
+    </section>
+    <section class="panel">
       <h2>Experiment Overview</h2>
       <div class="grid-4">
         {overview_cards}
@@ -284,6 +369,10 @@ def render_dashboard_html(
         <h2>Sweep Families</h2>
         {sweep_table}
       </article>
+    </section>
+    <section class="panel">
+      <h2>Family Trends</h2>
+      {family_trend_grid}
     </section>
     <section class="panel">
       <h2>Recent Runs</h2>
@@ -332,6 +421,33 @@ def collect_gpu_stats() -> list[dict[str, str]]:
 
 def now_local_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime())
+
+
+def filter_runs(runs: list[RunSnapshot], filters: DashboardFilters) -> list[RunSnapshot]:
+    filtered: list[RunSnapshot] = []
+    for run in runs:
+        task = _infer_task(run)
+        status = _run_status(run)
+        family = _family_name(run.run_dir.name)
+        if filters.task != "all" and task != filters.task:
+            continue
+        if filters.status != "all" and status != filters.status:
+            continue
+        if filters.family != "all" and family != filters.family:
+            continue
+        filtered.append(run)
+    return filtered
+
+
+def build_filter_options(runs: list[RunSnapshot]) -> dict[str, list[str]]:
+    tasks = sorted({_infer_task(run) for run in runs})
+    statuses = sorted({_run_status(run) for run in runs})
+    families = sorted({_family_name(run.run_dir.name) for run in runs})
+    return {
+        "task": ["all", *tasks],
+        "status": ["all", *statuses],
+        "family": ["all", *families],
+    }
 
 
 def summarize_runs(runs: list[RunSnapshot]) -> dict[str, Any]:
@@ -448,6 +564,44 @@ def build_sweep_rows(runs: list[RunSnapshot]) -> list[SweepRow]:
         )
     )
     return rows
+
+
+def build_family_trends(runs: list[RunSnapshot]) -> list[dict[str, Any]]:
+    families: dict[tuple[str, str], list[RunSnapshot]] = {}
+    for run in runs:
+        families.setdefault((_family_name(run.run_dir.name), _infer_task(run)), []).append(run)
+
+    trends: list[dict[str, Any]] = []
+    for (family, task), family_runs in sorted(families.items()):
+        points = []
+        for run in sorted(family_runs, key=_family_run_sort_key):
+            metric_name, metric_value = _primary_metric(run)
+            if metric_value != metric_value:
+                continue
+            points.append(
+                {
+                    "run_name": run.run_dir.name,
+                    "label": _short_round_label(run.run_dir.name),
+                    "metric_name": metric_name,
+                    "metric_value": metric_value,
+                    "status": _run_status(run),
+                    "updated_at": _run_updated_at(run),
+                }
+            )
+        if not points:
+            continue
+        trends.append(
+            {
+                "family": family,
+                "task": task,
+                "metric_name": points[-1]["metric_name"],
+                "points": points,
+                "best_value": max(point["metric_value"] for point in points),
+                "latest_value": points[-1]["metric_value"],
+            }
+        )
+    trends.sort(key=lambda item: (item["task"], item["family"]))
+    return trends
 
 
 def build_recent_run_rows(runs: list[RunSnapshot]) -> list[dict[str, Any]]:
@@ -578,6 +732,41 @@ def _render_overview_cards(overview: dict[str, Any]) -> str:
     )
 
 
+def _render_filter_panel(
+    filters: DashboardFilters,
+    options: dict[str, list[str]],
+    filtered_count: int,
+    total_count: int,
+) -> str:
+    task_options = _render_select_options(options.get("task", ["all"]), filters.task)
+    status_options = _render_select_options(options.get("status", ["all"]), filters.status)
+    family_options = _render_select_options(options.get("family", ["all"]), filters.family)
+    return f"""
+    <form method="get" action="/" class="toolbar">
+      <div>
+        <label for="task">Task</label>
+        <select id="task" name="task">{task_options}</select>
+      </div>
+      <div>
+        <label for="status">Status</label>
+        <select id="status" name="status">{status_options}</select>
+      </div>
+      <div>
+        <label for="family">Family</label>
+        <select id="family" name="family">{family_options}</select>
+      </div>
+      <div>
+        <label>Result Set</label>
+        <div class="muted small">{filtered_count} / {total_count} runs shown</div>
+      </div>
+      <div class="toolbar-actions">
+        <button class="button" type="submit">Apply Filters</button>
+        <a class="button button-secondary" href="/">Clear</a>
+      </div>
+    </form>
+    """
+
+
 def _render_leaderboard_tables(leaderboard: dict[str, list[dict[str, Any]]]) -> str:
     sections = []
     titles = {
@@ -637,6 +826,21 @@ def _render_sweep_table(rows: list[SweepRow]) -> str:
     )
 
 
+def _render_family_trend_grid(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return "<p class='muted'>No family trends found for the selected filters.</p>"
+    cards = []
+    for row in rows:
+        cards.append(
+            "<article class='family-mini'>"
+            f"<h3><span class='mono'>{_escape(row['family'])}</span><span class='task-chip'>{_escape(row['task'])}</span></h3>"
+            f"<div class='muted small' style='margin-bottom:8px;'>metric: {_escape(row['metric_name'])} | latest {_fmt(row['latest_value'], precision=4)} | best {_fmt(row['best_value'], precision=4)}</div>"
+            f"{_render_family_trend_svg(row)}"
+            "</article>"
+        )
+    return f"<div class='family-grid'>{''.join(cards)}</div>"
+
+
 def _render_recent_runs_table(rows: list[dict[str, Any]]) -> str:
     if not rows:
         return "<p class='muted'>No runs found.</p>"
@@ -659,6 +863,48 @@ def _render_recent_runs_table(rows: list[dict[str, Any]]) -> str:
         "<div class='scroll-x'><table><thead><tr><th>Run</th><th>Task</th><th>Status</th><th>Epoch</th><th>Primary Metric</th><th>Updated</th></tr></thead>"
         f"<tbody>{''.join(body)}</tbody></table></div>"
     )
+
+
+def _render_family_trend_svg(row: dict[str, Any]) -> str:
+    points = row["points"]
+    if not points:
+        return "<p class='muted'>No trend points.</p>"
+    width, height = 360, 126
+    margin_left, margin_right, margin_top, margin_bottom = 18, 14, 14, 28
+    chart_width = width - margin_left - margin_right
+    chart_height = height - margin_top - margin_bottom
+    xs = list(range(len(points)))
+    ys = [float(point["metric_value"]) for point in points]
+    y_min, y_max = _expand_bounds(min(ys), max(ys))
+
+    def x_map(value: float) -> float:
+        if len(xs) == 1:
+            return margin_left + chart_width / 2.0
+        return margin_left + value / max(1, len(xs) - 1) * chart_width
+
+    def y_map(value: float) -> float:
+        return margin_top + chart_height * (1.0 - (value - y_min) / max(1e-8, y_max - y_min))
+
+    grid_lines = []
+    for frac in (0.0, 0.5, 1.0):
+        y = margin_top + chart_height * frac
+        grid_lines.append(f"<line x1='{margin_left}' y1='{y:.2f}' x2='{width - margin_right}' y2='{y:.2f}' stroke='var(--grid)' stroke-width='1' />")
+    path = _svg_path(xs, ys, x_map, y_map, "#22c55e", f"{row['family']}_trend", with_points=True)
+    labels = []
+    for idx, point in enumerate(points):
+        x = x_map(idx)
+        labels.append(
+            f"<text x='{x:.2f}' y='{height - 8}' text-anchor='middle' fill='var(--muted)' font-size='10' font-family='var(--mono)'>{_escape(str(point['label']))}</text>"
+        )
+    value_labels = (
+        f"<text x='{margin_left}' y='11' fill='var(--muted)' font-size='10' font-family='var(--mono)'>{_fmt(max(ys), precision=4)}</text>"
+        f"<text x='{margin_left}' y='{height - margin_bottom + 12}' fill='var(--muted)' font-size='10' font-family='var(--mono)'>{_fmt(min(ys), precision=4)}</text>"
+    )
+    axes = (
+        f"<line x1='{margin_left}' y1='{margin_top}' x2='{margin_left}' y2='{height - margin_bottom}' stroke='var(--muted)' stroke-width='1' />"
+        f"<line x1='{margin_left}' y1='{height - margin_bottom}' x2='{width - margin_right}' y2='{height - margin_bottom}' stroke='var(--muted)' stroke-width='1' />"
+    )
+    return f"<svg viewBox='0 0 {width} {height}'>{''.join(grid_lines)}{axes}{path}{''.join(labels)}{value_labels}</svg>"
 
 
 def _render_run_card(run: RunSnapshot) -> str:
@@ -945,6 +1191,17 @@ def _fmt(value: Any, precision: int = 3) -> str:
     return _escape(str(value))
 
 
+def _render_select_options(values: list[str], selected: str) -> str:
+    options = []
+    for value in values:
+        label = value
+        if value == "all":
+            label = "all"
+        is_selected = " selected" if value == selected else ""
+        options.append(f"<option value='{_escape(value)}'{is_selected}>{_escape(label)}</option>")
+    return "".join(options)
+
+
 def _progress_text(live: dict[str, Any]) -> str:
     if not live:
         return "No live status available."
@@ -1018,6 +1275,10 @@ def _run_updated_epoch_key(run: RunSnapshot) -> tuple[str, float]:
     return (_run_updated_at(run), _run_latest_epoch(run) or -1.0)
 
 
+def _family_run_sort_key(run: RunSnapshot) -> tuple[int, str, float]:
+    return (_extract_round_number(run.run_dir.name), _run_updated_at(run), _run_latest_epoch(run) or -1.0)
+
+
 def _infer_task(run: RunSnapshot) -> str:
     if run.summary and run.summary.get("task"):
         return str(run.summary["task"])
@@ -1057,3 +1318,17 @@ def _family_name(run_name: str) -> str:
             break
     trimmed = [part for part in trimmed if part]
     return "_".join(trimmed) if trimmed else name
+
+
+def _extract_round_number(run_name: str) -> int:
+    match = re.search(r"round(\d+)", run_name)
+    if match is None:
+        return 10**9
+    return int(match.group(1))
+
+
+def _short_round_label(run_name: str) -> str:
+    match = re.search(r"(round\d+)", run_name)
+    if match is not None:
+        return match.group(1)
+    return run_name[:12]

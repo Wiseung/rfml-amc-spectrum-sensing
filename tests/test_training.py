@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import torch
 
-from rfml.monitor import collect_gpu_stats, load_run_snapshot, render_dashboard_html
+from rfml.monitor import DashboardFilters, collect_gpu_stats, load_run_snapshot, render_dashboard_html
 from rfml.training.losses import compute_weighted_cross_entropy
 from rfml.data.splits import create_stratified_splits_from_h5, save_split_bundle
 from rfml.training.metrics import compute_accuracy_vs_snr
@@ -120,7 +120,7 @@ def test_resume_rejects_when_target_epochs_not_greater_than_checkpoint_epoch(tmp
             h5_path=h5_path,
             split_path=split_path,
             out_dir=tmp_path / "resume_reject",
-            resume_ckpt=out_dir / "best.pt",
+            resume_ckpt=out_dir / "last.pt",
         )
 
 
@@ -227,14 +227,50 @@ def test_monitor_snapshot_and_dashboard_render(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     (run_dir / "best.pt").write_bytes(b"pt")
+    stft_round1 = tmp_path / "stft_cnn_round1_seed42"
+    stft_round1.mkdir(parents=True)
+    stft_round1_eval = tmp_path / "stft_cnn_round1_seed42_eval"
+    stft_round1_eval.mkdir(parents=True)
+    (stft_round1 / "train_log.csv").write_text(
+        "epoch,train_loss,train_acc,val_loss,val_acc,lr\n"
+        "1,2.1,0.2,1.9,0.30,0.001\n",
+        encoding="utf-8",
+    )
+    (stft_round1 / "live_status.json").write_text(
+        json.dumps({"status": "completed", "phase": "eval", "epoch": 1, "updated_at": "2026-05-08T20:00:00+0800"}, indent=2),
+        encoding="utf-8",
+    )
+    (stft_round1_eval / "summary.json").write_text(
+        json.dumps({"task": "amc", "overall_accuracy": 0.31}, indent=2),
+        encoding="utf-8",
+    )
+    stft_round2 = tmp_path / "stft_cnn_round2_nfft128_hop16_deep"
+    stft_round2.mkdir(parents=True)
+    stft_round2_eval = tmp_path / "stft_cnn_round2_nfft128_hop16_deep_eval"
+    stft_round2_eval.mkdir(parents=True)
+    (stft_round2 / "train_log.csv").write_text(
+        "epoch,train_loss,train_acc,val_loss,val_acc,lr\n"
+        "1,1.9,0.3,1.6,0.40,0.001\n",
+        encoding="utf-8",
+    )
+    (stft_round2 / "live_status.json").write_text(
+        json.dumps({"status": "completed", "phase": "eval", "epoch": 2, "updated_at": "2026-05-08T21:00:00+0800"}, indent=2),
+        encoding="utf-8",
+    )
+    (stft_round2_eval / "summary.json").write_text(
+        json.dumps({"task": "amc", "overall_accuracy": 0.47}, indent=2),
+        encoding="utf-8",
+    )
 
     snapshot = load_run_snapshot(run_dir)
     assert snapshot.eval_dir == eval_dir
     assert len(snapshot.train_log) == 2
     assert snapshot.live_status is not None
     assert snapshot.summary is not None
+    stft_snapshot_1 = load_run_snapshot(stft_round1)
+    stft_snapshot_2 = load_run_snapshot(stft_round2)
     html = render_dashboard_html(
-        [snapshot],
+        [snapshot, stft_snapshot_1, stft_snapshot_2],
         root=tmp_path,
         gpu_stats=collect_gpu_stats(),
         refreshed_at="2026-05-08T23:59:59+0800",
@@ -244,10 +280,28 @@ def test_monitor_snapshot_and_dashboard_render(tmp_path: Path) -> None:
     assert "Experiment Overview" in html
     assert "Task Leaderboard" in html
     assert "Sweep Families" in html
+    assert "Filters" in html
+    assert "Family Trends" in html
     assert "Recent Runs" in html
     assert "demo_run" in html
     assert "demo_run_eval" in html
     assert "overall_accuracy" in html
+    assert "stft_cnn" in html
+    assert "round1" in html
+    assert "round2" in html
+
+    filtered_html = render_dashboard_html(
+        [snapshot, stft_snapshot_1, stft_snapshot_2],
+        root=tmp_path,
+        gpu_stats=[],
+        refreshed_at="2026-05-08T23:59:59+0800",
+        refresh_seconds=5.0,
+        filters=DashboardFilters(task="amc", status="completed", family="stft_cnn"),
+    )
+    assert "stft_cnn_round1_seed42" in filtered_html
+    assert "stft_cnn_round2_nfft128_hop16_deep" in filtered_html
+    assert "demo_run_eval" not in filtered_html
+    assert "2 / 3 runs shown" in filtered_html
 
 
 def _build_training_h5(path: Path) -> Path:
